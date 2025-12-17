@@ -1,0 +1,22 @@
+# Maven
+target/
+dependency-reduced-pom.xml
+
+# IntelliJ IDEA
+.idea/
+*.iml
+
+# Visual Studio Code
+.vscode/
+
+# Runtime directories
+uploads/
+fragmented/
+
+# Test data
+test/
+Wikipedia_dataset_230k_filenames_for_validating_jpeg_validator.txt
+SYSTEM_WORKFLOW_DOCUMENTATION.txt
+# OS files
+.DS_Store
+Thumbs.db

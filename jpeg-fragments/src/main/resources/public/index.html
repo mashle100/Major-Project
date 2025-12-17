@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JPEG Fragmentation Detection System</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔍 JPEG Fragmentation Detection System</h1>
+            <p class="subtitle">Upload images to detect fragmentation points with high accuracy</p>
+        </header>
+
+        <div class="main-content">
+            <!-- Backend Control Section -->
+            <section class="control-panel">
+                <div class="card">
+                    <h2>🚀 Backend Control</h2>
+                    <div class="status-indicator">
+                        <span class="status-dot" id="statusDot"></span>
+                        <span id="backendStatus">Checking...</span>
+                    </div>
+                    <button id="startBackendBtn" class="btn btn-primary">Start Backend Server</button>
+                    <button id="checkStatusBtn" class="btn btn-secondary">Check Status</button>
+                    <div id="backendMessage" class="message"></div>
+                </div>
+            </section>
+
+            <!-- File Upload Section -->
+            <section class="upload-section">
+                <div class="card">
+                    <h2>📁 Upload Images</h2>
+                    <div class="upload-area" id="uploadArea">
+                        <div class="upload-icon">📤</div>
+                        <p>Drag & drop JPEG images here or click to browse</p>
+                        <input type="file" id="fileInput" accept="image/jpeg,image/jpg" multiple hidden>
+                        <button class="btn btn-upload" onclick="document.getElementById('fileInput').click()">
+                            Choose Files
+                        </button>
+                    </div>
+                    
+                    <div id="fileList" class="file-list"></div>
+
+                    <div class="options">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="fragmentCheckbox" checked>
+                            <span>Fragment images before analysis</span>
+                        </label>
+                        
+                        <div class="fragment-count-selector">
+                            <label for="insertionSizeDropdown">
+                                <span>Insertion Size:</span>
+                            </label>
+                            <select id="insertionSizeDropdown" class="dropdown">
+                                <option value="0" selected>0 KB</option>
+                                <option value="4">4 KB</option>
+                                <option value="8">8 KB</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="button-group">
+                        <button id="analyzeBtn" class="btn btn-success" disabled>
+                            🔬 Analyze Images
+                        </button>
+                        <button id="reanalyzeBtn" class="btn btn-primary" disabled style="display:none;">
+                            🔄 Analyze Again
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Results Section -->
+            <section class="results-section" id="resultsSection" style="display: none;">
+                <div class="card">
+                    <h2>📊 Analysis Results</h2>
+                    <div id="overallStats" class="stats-container"></div>
+                    <div id="resultsContainer" class="results-container"></div>
+                </div>
+            </section>
+        </div>
+
+        <footer>
+            <p>JPEG Fragmentation Detection - Major Project 2025</p>
+        </footer>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay">
+        <div class="spinner"></div>
+        <p>Processing images...</p>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
