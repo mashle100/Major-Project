@@ -49,12 +49,53 @@ public class JpegValidationResult extends ValidationResult {
         this.allDetectedFragments = allFragments != null ? new ArrayList<>(allFragments) : new ArrayList<>();
 
         // Convert list of offsets to ranges (pairs of start-end)
+        List<FragmentRange> rawRanges = new ArrayList<>();
         if (allFragments != null && allFragments.size() >= 2) {
             for (int i = 0; i < allFragments.size() - 1; i += 2) {
-                detectedFragmentRanges.add(new FragmentRange(allFragments.get(i), allFragments.get(i + 1)));
+                rawRanges.add(new FragmentRange(allFragments.get(i), allFragments.get(i + 1)));
             }
         }
+        
+        // Merge fragments that are very close together (gap < 1KB)
+        this.detectedFragmentRanges = mergeCloseFragments(rawRanges, 1024); // 1KB threshold
         this.totalFragmentsDetected = this.detectedFragmentRanges.size();
+    }
+    
+    /**
+     * Merge fragments that are separated by less than the specified gap threshold.
+     * This consolidates closely-spaced fragments that are actually part of the same continuous region.
+     * 
+     * @param ranges List of fragment ranges to merge
+     * @param maxGap Maximum gap size (in bytes) to merge across
+     * @return List of merged fragment ranges
+     */
+    private List<FragmentRange> mergeCloseFragments(List<FragmentRange> ranges, int maxGap) {
+        if (ranges == null || ranges.isEmpty()) {
+            return new ArrayList<>();
+        }
+        
+        List<FragmentRange> merged = new ArrayList<>();
+        FragmentRange current = ranges.get(0);
+        
+        for (int i = 1; i < ranges.size(); i++) {
+            FragmentRange next = ranges.get(i);
+            long gap = next.start.longValue() - current.end.longValue();
+            
+            // If gap is less than threshold, merge the fragments
+            if (gap < maxGap) {
+                // Extend current fragment to include next fragment
+                current = new FragmentRange(current.start, next.end);
+            } else {
+                // Gap is too large, finalize current and start new
+                merged.add(current);
+                current = next;
+            }
+        }
+        
+        // Add the last fragment
+        merged.add(current);
+        
+        return merged;
     }
 
     @Override

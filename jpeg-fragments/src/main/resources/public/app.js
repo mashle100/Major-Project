@@ -411,10 +411,6 @@ function createResultCard(result) {
                         <div class="summary-value">${result.totalDetectedFragments || 0}</div>
                     </div>
                     <div class="summary-item">
-                        <div class="summary-label">Matched</div>
-                        <div class="summary-value">${result.matchedFragments || 0}</div>
-                    </div>
-                    <div class="summary-item">
                         <div class="summary-label">Total Inserted</div>
                         <div class="summary-value">${result.totalInsertedBytes ? formatBytes(result.totalInsertedBytes) : 'N/A'}</div>
                     </div>
@@ -457,12 +453,6 @@ function createResultCard(result) {
                                 }).join('')}
                             </tbody>
                         </table>
-                        <div style="margin-top: 10px; padding: 10px; background: rgba(25, 135, 84, 0.05); border-radius: 4px; font-size: 12px; color: #198754;">
-                            <strong>💡 How Fragment Detection Works:</strong> The detector scans the entropy-coded bitstream using JPEG decoding rules. 
-                            When it finds data that satisfies Huffman coding, RLE bounds, and MCU structure (4+ consecutive valid MCUs), it marks a 
-                            <strong>fragment start</strong>. It continues decoding until a JPEG rule breaks, then marks <strong>fragment end</strong> 
-                            at the last valid position. This process repeats to find all valid JPEG sequences in the fragmented file.
-                        </div>
                     </div>
                 ` : ''}
 
@@ -542,13 +532,6 @@ function createResultCard(result) {
                                 }).join('')}
                             </tbody>
                         </table>
-                    </div>
-                ` : ''}
-                
-                ${result.validationMessage ? `
-                    <div class="detail-item" style="grid-column: 1 / -1; margin-top: 10px;">
-                        <div class="detail-label">Validation Message</div>
-                        <div class="detail-value" style="font-size: 0.95em;">${result.validationMessage}</div>
                     </div>
                 ` : ''}
             `}
