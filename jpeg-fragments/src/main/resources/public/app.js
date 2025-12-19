@@ -11,8 +11,6 @@ const analyzeBtn = document.getElementById('analyzeBtn');
 const reanalyzeBtn = document.getElementById('reanalyzeBtn');
 const startBackendBtn = document.getElementById('startBackendBtn');
 const checkStatusBtn = document.getElementById('checkStatusBtn');
-const fragmentCheckbox = document.getElementById('fragmentCheckbox');
-const insertionSizeDropdown = document.getElementById('insertionSizeDropdown');
 const resultsSection = document.getElementById('resultsSection');
 const resultsContainer = document.getElementById('resultsContainer');
 const overallStats = document.getElementById('overallStats');
@@ -77,6 +75,11 @@ function addFiles(files) {
     });
     updateFileList();
     analyzeBtn.disabled = selectedFiles.length === 0;
+    
+    // Automatically initialize builder with first file
+    if (selectedFiles.length > 0) {
+        initializeBuilder(selectedFiles[0]);
+    }
 }
 
 function updateFileList() {
@@ -101,6 +104,14 @@ function removeFile(index) {
     selectedFiles.splice(index, 1);
     updateFileList();
     analyzeBtn.disabled = selectedFiles.length === 0;
+    
+    // Clear builder when file is removed
+    if (selectedFiles.length === 0) {
+        clearBuilder();
+    } else {
+        // Reinitialize builder with first remaining file
+        initializeBuilder(selectedFiles[0]);
+    }
 }
 
 function formatFileSize(bytes) {
@@ -590,3 +601,681 @@ function showMessage(element, type, message) {
 
 // Make removeFile globally accessible
 window.removeFile = removeFile;
+
+// ========================================
+// VISUAL FRAGMENTATION BUILDER
+// ========================================
+
+let builderMode = true; // Builder is now the default mode
+let currentImageFile = null;
+let originalImageSize = 0;
+let blockStructure = []; // Array of {type: 'jpeg'|'noise', blockIndex: number, size: number}
+let noiseBlockCounter = 0;
+
+// Add builder event listeners
+document.addEventListener('DOMContentLoaded', () => {
+    const addNoiseBlockBtn = document.getElementById('addNoiseBlockBtn');
+    const clearStructureBtn = document.getElementById('clearStructureBtn');
+    const applyStructureBtn = document.getElementById('applyStructureBtn');
+    const targetStructure = document.getElementById('targetStructure');
+    
+    if (addNoiseBlockBtn) {
+        addNoiseBlockBtn.addEventListener('click', addNoiseBlock);
+    }
+    
+    if (clearStructureBtn) {
+        clearStructureBtn.addEventListener('click', clearStructure);
+    }
+    
+    if (applyStructureBtn) {
+        applyStructureBtn.addEventListener('click', applyStructureAndFragment);
+    }
+    
+    if (targetStructure) {
+        targetStructure.addEventListener('dragover', handleTargetDragOver);
+        targetStructure.addEventListener('dragleave', handleTargetDragLeave);
+        targetStructure.addEventListener('drop', handleTargetDrop);
+    }
+});
+
+// Builder is now always active (default mode)
+// Removed toggleBuilder function as simple mode is no longer available
+
+function initializeBuilder(file) {
+    currentImageFile = file;
+    const reader = new FileReader();
+    
+    reader.onload = function(e) {
+        const arrayBuffer = e.target.result;
+        originalImageSize = arrayBuffer.byteLength;
+        
+        // Calculate number of 4KB blocks
+        const blockSize = 4096;
+        const numBlocks = Math.ceil(originalImageSize / blockSize);
+        
+        // Display original blocks (for reference only)
+        displayOriginalBlocks(numBlocks, blockSize);
+        
+        // Reset and auto-populate structure with all JPEG blocks
+        blockStructure = [];
+        clearStructure();
+        autoPopulateStructure(numBlocks, blockSize);
+    };
+    
+    reader.readAsArrayBuffer(file);
+}
+
+function displayOriginalBlocks(numBlocks, blockSize) {
+    const container = document.getElementById('originalBlocks');
+    container.innerHTML = '';
+    
+    for (let i = 0; i < numBlocks; i++) {
+        const startByte = i * blockSize;
+        const endByte = Math.min((i + 1) * blockSize, originalImageSize);
+        const actualSize = endByte - startByte;
+        
+        const block = document.createElement('div');
+        block.className = 'block jpeg-block';
+        block.draggable = true;
+        block.dataset.type = 'jpeg';
+        block.dataset.blockIndex = i;
+        block.dataset.size = actualSize;
+        block.id = `jpeg-block-${i}`; // Add ID for tracking
+        block.innerHTML = `
+            <div class="block-label">Block ${i + 1}</div>
+            <div class="block-size">${formatBytes(actualSize)}</div>
+            <div class="block-size">[${startByte}-${endByte}]</div>
+        `;
+        
+        block.addEventListener('dragstart', handleBlockDragStart);
+        block.addEventListener('dragend', handleBlockDragEnd);
+        // Original blocks are for reference only - already in structure
+        block.style.opacity = '0.5';
+        block.style.cursor = 'default';
+        block.draggable = false;
+        
+        container.appendChild(block);
+    }
+}
+
+function autoPopulateStructure(numBlocks, blockSize) {
+    const targetStructure = document.getElementById('targetStructure');
+    const placeholder = targetStructure.querySelector('.drop-placeholder');
+    if (placeholder) {
+        placeholder.remove();
+    }
+    
+    console.log('Auto-populating structure with', numBlocks, 'JPEG blocks');
+    
+    for (let i = 0; i < numBlocks; i++) {
+        const startByte = i * blockSize;
+        const endByte = Math.min((i + 1) * blockSize, originalImageSize);
+        const actualSize = endByte - startByte;
+        
+        const block = document.createElement('div');
+        block.className = 'block jpeg-block';
+        block.draggable = true;
+        block.dataset.type = 'jpeg';
+        block.dataset.blockIndex = i;
+        block.dataset.size = actualSize;
+        block.dataset.inStructure = 'true';
+        block.innerHTML = `
+            <div class="block-label">Block ${i + 1}</div>
+            <div class="block-size">${formatBytes(actualSize)}</div>
+        `;
+        
+        // Add drag event handlers for reordering
+        block.addEventListener('dragstart', handleStructureBlockDragStart);
+        block.addEventListener('dragend', handleStructureBlockDragEnd);
+        block.addEventListener('dragover', handleStructureBlockDragOver);
+        block.addEventListener('drop', handleStructureBlockDrop);
+        
+        targetStructure.appendChild(block);
+        
+        // Update structure array
+        blockStructure.push({
+            type: 'jpeg',
+            blockIndex: i,
+            noiseId: null,
+            noiseType: null,
+            size: actualSize
+        });
+    }
+    
+    console.log('Structure populated with', blockStructure.length, 'blocks');
+}
+
+function addNoiseBlock() {
+    const noiseTypeDropdown = document.getElementById('noiseTypeDropdown');
+    const noiseType = noiseTypeDropdown.value;
+    const noiseSize = 4096; // Fixed 4KB size
+    const container = document.getElementById('noiseBlocks');
+    
+    // Check if noise type is implemented
+    if (noiseType === 'text' || noiseType === 'jpeg') {
+        alert(`${noiseType.toUpperCase()} noise type is not yet implemented. Using Random for now.`);
+    }
+    
+    noiseBlockCounter++;
+    
+    const block = document.createElement('div');
+    block.className = 'block noise-block';
+    block.draggable = true;
+    block.dataset.type = 'noise';
+    block.dataset.noiseType = noiseType;
+    block.dataset.noiseId = noiseBlockCounter;
+    block.dataset.size = noiseSize;
+    block.id = `noise-block-${noiseBlockCounter}`; // Add ID for tracking
+    block.innerHTML = `
+        <div class="block-label">Noise ${noiseBlockCounter} (${noiseType})</div>
+        <div class="block-size">${formatBytes(noiseSize)}</div>
+    `;
+    
+    block.addEventListener('dragstart', handleBlockDragStart);
+    block.addEventListener('dragend', handleBlockDragEnd);
+    
+    container.appendChild(block);
+}
+
+let draggedSourceBlock = null;
+
+function handleBlockDragStart(e) {
+    draggedSourceBlock = {
+        type: e.target.dataset.type,
+        blockIndex: e.target.dataset.blockIndex || null,
+        noiseId: e.target.dataset.noiseId || null,
+        noiseType: e.target.dataset.noiseType || 'random',
+        size: e.target.dataset.size
+    };
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData('text/plain', JSON.stringify(draggedSourceBlock));
+    e.target.style.opacity = '0.5';
+}
+
+function handleBlockDragEnd(e) {
+    e.target.style.opacity = '1';
+    draggedSourceBlock = null;
+    removeAllDropIndicators();
+}
+
+let draggedStructureBlock = null;
+
+function removeAllDropIndicators() {
+    document.querySelectorAll('.drop-indicator').forEach(indicator => indicator.remove());
+}
+
+function showDropIndicator(block, position) {
+    removeAllDropIndicators();
+    const indicator = document.createElement('div');
+    indicator.className = `drop-indicator ${position}`;
+    block.appendChild(indicator);
+}
+
+function getDropPosition(block, clientX) {
+    const rect = block.getBoundingClientRect();
+    const midpoint = rect.left + rect.width / 2;
+    return clientX < midpoint ? 'before' : 'after';
+}
+
+function handleStructureBlockDragStart(e) {
+    draggedStructureBlock = e.target;
+    e.target.style.opacity = '0.5';
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/html', e.target.innerHTML);
+}
+
+function handleStructureBlockDragEnd(e) {
+    e.target.style.opacity = '1';
+    
+    // Clean up any border styles
+    const targetStructure = document.getElementById('targetStructure');
+    const allBlocks = Array.from(targetStructure.querySelectorAll('.block'));
+    allBlocks.forEach(block => {
+        block.style.borderTop = '';
+        block.style.borderBottom = '';
+    });
+    
+    draggedStructureBlock = null;
+}
+
+function handleStructureBlockDragOver(e) {
+    if (e.preventDefault) {
+        e.preventDefault();
+    }
+    e.dataTransfer.dropEffect = draggedStructureBlock ? 'move' : 'copy';
+    
+    const target = e.currentTarget;
+    const position = getDropPosition(target, e.clientX);
+    
+    // Show visual indicator
+    showDropIndicator(target, position);
+    
+    return false;
+}
+
+function handleStructureBlockDrop(e) {
+    if (e.stopPropagation) {
+        e.stopPropagation();
+    }
+    if (e.preventDefault) {
+        e.preventDefault();
+    }
+    
+    const target = e.currentTarget;
+    removeAllDropIndicators();
+    
+    // Handle reordering existing blocks in structure
+    if (draggedStructureBlock && target !== draggedStructureBlock) {
+        const targetStructure = document.getElementById('targetStructure');
+        const allBlocks = Array.from(targetStructure.children);
+        const draggedIndex = allBlocks.indexOf(draggedStructureBlock);
+        const targetIndex = allBlocks.indexOf(target);
+        
+        if (draggedIndex !== -1 && targetIndex !== -1) {
+            const position = getDropPosition(target, e.clientX);
+            const insertBefore = position === 'before';
+            
+            // Remove dragged block from array first
+            const movedBlock = blockStructure.splice(draggedIndex, 1)[0];
+            
+            // Calculate new index in the array after removal
+            let newArrayIndex;
+            if (insertBefore) {
+                newArrayIndex = draggedIndex < targetIndex ? targetIndex - 1 : targetIndex;
+            } else {
+                newArrayIndex = draggedIndex < targetIndex ? targetIndex : targetIndex + 1;
+            }
+            
+            // Update DOM
+            if (insertBefore) {
+                targetStructure.insertBefore(draggedStructureBlock, target);
+            } else {
+                targetStructure.insertBefore(draggedStructureBlock, target.nextSibling);
+            }
+            
+            // Insert block at new position in array
+            blockStructure.splice(newArrayIndex, 0, movedBlock);
+            
+            console.log('Reordered: moved from index', draggedIndex, 'to', newArrayIndex);
+            console.log('New structure:', blockStructure);
+        }
+    }
+    // Handle inserting new noise block from source
+    else if (draggedSourceBlock && draggedSourceBlock.type === 'noise') {
+        const targetStructure = document.getElementById('targetStructure');
+        const allBlocks = Array.from(targetStructure.children);
+        const targetIndex = allBlocks.indexOf(target);
+        
+        if (targetIndex !== -1) {
+            const position = getDropPosition(target, e.clientX);
+            const insertIndex = position === 'before' ? targetIndex : targetIndex + 1;
+            
+            console.log('Inserting noise block at index:', insertIndex);
+            addBlockToStructure(draggedSourceBlock, insertIndex);
+        }
+    }
+    
+    draggedStructureBlock = null;
+    return false;
+}
+
+function handleTargetDragOver(e) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    e.currentTarget.classList.add('drag-active');
+}
+
+function handleTargetDragLeave(e) {
+    e.currentTarget.classList.remove('drag-active');
+    removeAllDropIndicators();
+}
+
+function handleTargetDrop(e) {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drag-active');
+    removeAllDropIndicators();
+    
+    // Check if this is a reordering operation
+    if (draggedStructureBlock) {
+        draggedStructureBlock = null;
+        return;
+    }
+    
+    // This is adding a new noise block from source
+    try {
+        const data = JSON.parse(e.dataTransfer.getData('text/plain'));
+        
+        // Only allow noise blocks to be added (JPEG blocks are already there)
+        if (data.type === 'noise') {
+            const targetStructure = document.getElementById('targetStructure');
+            const allBlocks = Array.from(targetStructure.children);
+            
+            // Check if dropped at the very start (before first block)
+            if (allBlocks.length > 0) {
+                const firstBlock = allBlocks[0];
+                const rect = firstBlock.getBoundingClientRect();
+                
+                // If dropped before the first block, insert at position 0
+                if (e.clientX < rect.left) {
+                    console.log('Inserting noise block at start (position 0)');
+                    addBlockToStructure(data, 0);
+                    return;
+                }
+            }
+            
+            // Otherwise add at the end (dropped on empty space)
+            addBlockToStructure(data);
+            console.log('Added noise block at end');
+        } else if (data.type === 'jpeg') {
+            alert('JPEG blocks are already in the structure. You can only add noise blocks between them.');
+        }
+    } catch (error) {
+        console.error('Error parsing drop data:', error);
+    }
+}
+
+function addBlockToStructure(blockData, insertBeforeIndex = null) {
+    const targetStructure = document.getElementById('targetStructure');
+    const placeholder = targetStructure.querySelector('.drop-placeholder');
+    
+    // Only noise blocks should be added manually (JPEG blocks are auto-populated)
+    if (blockData.type === 'jpeg') {
+        console.log('JPEG blocks are already in structure. Ignoring add request.');
+        return;
+    }
+    
+    if (placeholder) {
+        placeholder.remove();
+    }
+    
+    const block = document.createElement('div');
+    block.className = 'block noise-block';
+    block.draggable = true;
+    block.dataset.type = blockData.type;
+    block.dataset.noiseId = blockData.noiseId;
+    block.dataset.noiseType = blockData.noiseType || 'random';
+    block.dataset.size = blockData.size;
+    block.dataset.inStructure = 'true';
+    
+    const noiseTypeLabel = blockData.noiseType ? ` (${blockData.noiseType})` : '';
+    const label = `Noise ${blockData.noiseId}${noiseTypeLabel}`;
+    
+    block.innerHTML = `
+        <div class="block-label">${label}</div>
+        <div class="block-size">${formatBytes(parseInt(blockData.size))}</div>
+        <button class="remove-btn" onclick="removeBlockFromStructure(this)">×</button>
+    `;
+    
+    // Add drag event handlers for reordering
+    block.addEventListener('dragstart', handleStructureBlockDragStart);
+    block.addEventListener('dragend', handleStructureBlockDragEnd);
+    block.addEventListener('dragover', handleStructureBlockDragOver);
+    block.addEventListener('drop', handleStructureBlockDrop);
+    
+    // Insert at specified position or append
+    if (insertBeforeIndex !== null && insertBeforeIndex < targetStructure.children.length) {
+        targetStructure.insertBefore(block, targetStructure.children[insertBeforeIndex]);
+        
+        // Mark source block as used
+        markBlockAsUsed(blockData);
+        
+        // Update structure array at specific position
+        blockStructure.splice(insertBeforeIndex, 0, {
+            type: blockData.type,
+            blockIndex: null,
+            noiseId: blockData.noiseId ? parseInt(blockData.noiseId) : null,
+            noiseType: blockData.noiseType || 'random',
+            size: parseInt(blockData.size)
+        });
+    } else {
+        targetStructure.appendChild(block);
+        
+        // Mark source block as used
+        markBlockAsUsed(blockData);
+        
+        // Update structure array
+        blockStructure.push({
+            type: blockData.type,
+            blockIndex: null,
+            noiseId: blockData.noiseId ? parseInt(blockData.noiseId) : null,
+            noiseType: blockData.noiseType || 'random',
+            size: parseInt(blockData.size)
+        });
+    }
+}
+
+function removeBlockFromStructure(btn) {
+    const block = btn.parentElement;
+    const index = Array.from(block.parentElement.children).indexOf(block);
+    
+    // Get block data before removing
+    const blockData = blockStructure[index];
+    
+    // Unmark source block as unused
+    unmarkBlockAsUsed(blockData);
+    
+    block.remove();
+    blockStructure.splice(index, 1);
+    
+    const targetStructure = document.getElementById('targetStructure');
+    if (targetStructure.children.length === 0) {
+        targetStructure.innerHTML = '<div class="drop-placeholder">Drop blocks here to build fragmentation pattern</div>';
+    }
+}
+
+function clearStructure() {
+    const targetStructure = document.getElementById('targetStructure');
+    
+    // Remove only noise blocks, keep JPEG blocks
+    const blocks = Array.from(targetStructure.children);
+    blocks.forEach(block => {
+        if (block.dataset && block.dataset.type === 'noise') {
+            // Unmark the noise block as used in the source
+            const blockData = {
+                type: 'noise',
+                noiseId: block.dataset.noiseId
+            };
+            unmarkBlockAsUsed(blockData);
+            block.remove();
+        }
+    });
+    
+    // Update blockStructure to only contain JPEG blocks
+    blockStructure = blockStructure.filter(item => item.type === 'jpeg');
+    
+    console.log('Cleared all noise blocks. JPEG blocks remain.');
+}
+
+function clearBuilder() {
+    // Clear original blocks
+    const originalBlocks = document.getElementById('originalBlocks');
+    if (originalBlocks) {
+        originalBlocks.innerHTML = '';
+    }
+    
+    // Clear noise blocks
+    const noiseBlocks = document.getElementById('noiseBlocks');
+    if (noiseBlocks) {
+        noiseBlocks.innerHTML = '';
+    }
+    
+    // Clear target structure completely
+    const targetStructure = document.getElementById('targetStructure');
+    targetStructure.innerHTML = '<div class="drop-placeholder">Upload an image to start</div>';
+    blockStructure = [];
+    
+    // Reset counters and state
+    noiseBlockCounter = 0;
+    currentImageFile = null;
+    originalImageSize = 0;
+    
+    console.log('Builder cleared');
+}
+
+function markBlockAsUsed(blockData) {
+    let sourceBlock;
+    if (blockData.type === 'jpeg') {
+        sourceBlock = document.getElementById(`jpeg-block-${blockData.blockIndex}`);
+    } else if (blockData.type === 'noise') {
+        sourceBlock = document.getElementById(`noise-block-${blockData.noiseId}`);
+    }
+    
+    if (sourceBlock && !sourceBlock.classList.contains('used')) {
+        sourceBlock.classList.add('used');
+        sourceBlock.style.position = 'relative';
+    }
+}
+
+function unmarkBlockAsUsed(blockData) {
+    let sourceBlock;
+    if (blockData.type === 'jpeg') {
+        sourceBlock = document.getElementById(`jpeg-block-${blockData.blockIndex}`);
+    } else if (blockData.type === 'noise') {
+        sourceBlock = document.getElementById(`noise-block-${blockData.noiseId}`);
+    }
+    
+    if (sourceBlock) {
+        sourceBlock.classList.remove('used');
+        sourceBlock.style.position = '';
+    }
+}
+
+async function applyStructureAndFragment() {
+    if (blockStructure.length === 0) {
+        alert('Please add blocks to the fragmentation structure first!');
+        return;
+    }
+    
+    if (!currentImageFile) {
+        alert('Please select an image first!');
+        return;
+    }
+    
+    // Rebuild blockStructure from DOM to ensure accuracy
+    const targetStructure = document.getElementById('targetStructure');
+    const blocks = Array.from(targetStructure.children);
+    blockStructure = blocks.map(block => {
+        const type = block.dataset.type;
+        if (type === 'jpeg') {
+            return {
+                type: 'jpeg',
+                blockIndex: parseInt(block.dataset.blockIndex),
+                noiseId: null,
+                noiseType: null,
+                size: parseInt(block.dataset.size)
+            };
+        } else {
+            return {
+                type: 'noise',
+                blockIndex: null,
+                noiseId: parseInt(block.dataset.noiseId),
+                noiseType: block.dataset.noiseType || 'random',
+                size: parseInt(block.dataset.size)
+            };
+        }
+    });
+    
+    console.log('Final block structure to send:', blockStructure);
+    
+    // Show loading
+    showLoading(true);
+    
+    try {
+        const formData = new FormData();
+        formData.append('files', currentImageFile);
+        formData.append('fragment', 'true');
+        formData.append('blockStructure', JSON.stringify(blockStructure));
+        
+        const response = await fetch(`${API_BASE_URL}/analyze-custom`, {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        showLoading(false);
+        
+        if (data.success && data.results && data.results.length > 0) {
+            const result = data.results[0];
+            
+            // Display images
+            displayImageComparison(result);
+            
+            // Display results
+            displayResults(data);
+            resultsSection.style.display = 'block';
+            
+            // Show image comparison section
+            const imageComparisonSection = document.getElementById('imageComparisonSection');
+            if (imageComparisonSection) {
+                imageComparisonSection.style.display = 'block';
+            }
+            
+            resultsSection.scrollIntoView({ behavior: 'smooth' });
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error occurred'));
+        }
+    } catch (error) {
+        showLoading(false);
+        console.error('Error:', error);
+        alert('Failed to analyze image: ' + error.message);
+    }
+}
+
+function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function displayImageComparison(result) {
+    console.log('Displaying image comparison with result:', result);
+    
+    const originalImageDisplay = document.getElementById('originalImageDisplay');
+    const fragmentedImageDisplay = document.getElementById('fragmentedImageDisplay');
+    const reconstructedImageDisplay = document.getElementById('reconstructedImageDisplay');
+    
+    // Display original image from file
+    if (currentImageFile) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            originalImageDisplay.src = e.target.result;
+        };
+        reader.readAsDataURL(currentImageFile);
+    }
+    
+    // Display fragmented image
+    if (result.fragmentedImage) {
+        // Convert file path to URL
+        const filename = result.fragmentedImage.split('\\').pop().split('/').pop();
+        fragmentedImageDisplay.src = `/fragmented/${filename}`;
+        console.log('Fragmented image URL:', `/fragmented/${filename}`);
+    }
+    
+    // Display reconstructed image from detected boundaries
+    if (result.reconstructedImage) {
+        const filename = result.reconstructedImage.split('\\').pop().split('/').pop();
+        reconstructedImageDisplay.src = `/reconstructed/${filename}`;
+        reconstructedImageDisplay.style.display = 'block';
+        console.log('Reconstructed image URL:', `/reconstructed/${filename}`);
+        console.log('Reconstructed from detected boundaries after snapping');
+    } else {
+        console.warn('No reconstructed image in result');
+        reconstructedImageDisplay.style.display = 'none';
+        const container = reconstructedImageDisplay.parentElement;
+        if (!container.querySelector('.no-reconstruction-msg')) {
+            const msg = document.createElement('p');
+            msg.className = 'no-reconstruction-msg';
+            msg.style.color = '#666';
+            msg.textContent = 'No reconstruction available (no fragments detected)';
+            container.appendChild(msg);
+        }
+    }
+}
+
+// Make functions globally accessible
+window.removeBlockFromStructure = removeBlockFromStructure;

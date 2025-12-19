@@ -43,31 +43,83 @@
                     
                     <div id="fileList" class="file-list"></div>
 
-                    <div class="options">
-                        <label class="checkbox-label">
-                            <input type="checkbox" id="fragmentCheckbox" checked>
-                            <span>Fragment images before analysis</span>
-                        </label>
+                    <!-- Visual Fragmentation Builder -->
+                    <div id="fragmentationBuilder" class="fragmentation-builder">
+                        <h3>🎨 Build Fragmentation Pattern</h3>
+                        <p class="builder-info">All JPEG blocks are pre-placed in the structure below. Drag noise blocks between them to create fragmentation points.</p>
                         
-                        <div class="fragment-count-selector">
-                            <label for="insertionSizeDropdown">
-                                <span>Insertion Size:</span>
-                            </label>
-                            <select id="insertionSizeDropdown" class="dropdown">
-                                <option value="0" selected>0 KB</option>
-                                <option value="4">4 KB</option>
-                                <option value="8">8 KB</option>
-                            </select>
+                        <div class="builder-container">
+                            <!-- Original Image Blocks (Reference) -->
+                            <div class="original-blocks-section">
+                                <h4>📄 Original JPEG Blocks (Reference Only)</h4>
+                                <p style="font-size: 0.9em; color: #666; margin-top: 5px;">These blocks are already placed in the structure below</p>
+                                <div id="originalBlocks" class="blocks-container"></div>
+                            </div>
+
+                            <!-- Noise Block Pool -->
+                            <div class="noise-blocks-section">
+                                <h4>🔀 Noise Blocks (4KB) - Drag to insert</h4>
+                                <div class="noise-size-selector">
+                                    <label>Noise Type:</label>
+                                    <select id="noiseTypeDropdown" class="dropdown">
+                                        <option value="random" selected>Random</option>
+                                        <option value="text">Text (Coming Soon)</option>
+                                        <option value="jpeg">JPEG (Coming Soon)</option>
+                                    </select>
+                                    <button id="addNoiseBlockBtn" class="btn btn-small">+ Add Noise Block</button>
+                                </div>
+                                <div id="noiseBlocks" class="blocks-container noise-pool"></div>
+                            </div>
+
+                            <!-- Target Fragmented Structure -->
+                            <div class="target-structure-section">
+                                <h4>🎯 Fragmented Image Structure (All blocks pre-placed)</h4>
+                                <div id="targetStructure" class="target-structure">
+                                    <div class="drop-placeholder">Loading blocks...</div>
+                                </div>
+                                <div class="structure-actions">
+                                    <button id="clearStructureBtn" class="btn btn-secondary">Remove All Noise</button>
+                                    <button id="applyStructureBtn" class="btn btn-success">Apply & Fragment</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="button-group">
+                    <div class="button-group" id="simpleButtons" style="display: none;">
                         <button id="analyzeBtn" class="btn btn-success" disabled>
                             🔬 Analyze Images
                         </button>
                         <button id="reanalyzeBtn" class="btn btn-primary" disabled style="display:none;">
                             🔄 Analyze Again
                         </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Image Comparison Section -->
+            <section class="image-comparison-section" id="imageComparisonSection" style="display: none;">
+                <div class="card">
+                    <h2>🖼️ Image Comparison</h2>
+                    <div class="image-comparison-grid">
+                        <div class="image-comparison-item">
+                            <h3>Original Image</h3>
+                            <div class="image-container">
+                                <img id="originalImageDisplay" src="" alt="Original Image">
+                            </div>
+                        </div>
+                        <div class="image-comparison-item">
+                            <h3>Fragmented Image</h3>
+                            <div class="image-container">
+                                <img id="fragmentedImageDisplay" src="" alt="Fragmented Image">
+                            </div>
+                        </div>
+                        <div class="image-comparison-item">
+                            <h3>Reconstructed Image</h3>
+                            <div class="image-container">
+                                <img id="reconstructedImageDisplay" src="" alt="Reconstructed Image">
+                            </div>
+                            <p class="image-note">Reconstructed from detected boundaries</p>
+                        </div>
                     </div>
                 </div>
             </section>

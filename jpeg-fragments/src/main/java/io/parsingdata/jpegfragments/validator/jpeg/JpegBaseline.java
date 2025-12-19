@@ -34,6 +34,28 @@ public class JpegBaseline {
     private JpegBaseline() {
     }
 
+    /**
+     * Finds the start position of JPEG header (SOI marker).
+     * In valid JPEGs, this should be at byte 0, but we detect it explicitly.
+     * 
+     * @param input ByteStream to search
+     * @return Offset where SOI marker (0xFFD8) is found
+     */
+    private static long findJpegHeaderStart(ByteStream input) throws IOException {
+        // Search for SOI marker (0xFFD8) in first 100 bytes
+        for (int i = 0; i < 100; i++) {
+            if (input.isAvailable(BigInteger.valueOf(i), BigInteger.valueOf(2))) {
+                byte[] bytes = input.read(BigInteger.valueOf(i), 2);
+                if ((bytes[0] & 0xFF) == 0xFF && (bytes[1] & 0xFF) == 0xD8) {
+                    System.out.println("Found JPEG SOI (Start of Image) marker at offset: " + i);
+                    return i;
+                }
+            }
+        }
+        System.out.println("Warning: SOI marker not found in first 100 bytes, assuming offset 0");
+        return 0; // Default to 0 if not found
+    }
+
     static JpegValidationResult validateBaselineScan(final JpegValidator validator, final ParseState headerState,
             final ByteStream input) throws IOException {
         final Optional<ParseState> scanResult = SOS
@@ -76,14 +98,18 @@ public class JpegBaseline {
         final int[] tableSelectors = listToIntArray(
                 rev(ref(DC_AC_TABLE_SELECTOR)).eval(scanState, Encoding.DEFAULT_ENCODING));
 
-        // FRAGMENT DETECTION: Scan from byte 0, extend first fragment to include header
-        long detectionStart = 0; // Start from byte 0
+        // FRAGMENT DETECTION: Detect JPEG header start and extend first fragment to
+        // include it
+        long jpegHeaderStart = findJpegHeaderStart(input);
+        long detectionStart = jpegHeaderStart;
         long entropyStart = bitStream.getOffset();
 
         // Don't limit by MCU count - scan entire file to handle inserted noise
         System.out.println("\n=== Starting Fragment Detection (JPEG Rule-Based) ===");
+        System.out.println("JPEG header (SOI) detected at byte: " + jpegHeaderStart);
         System.out.println("Detection starts from byte: " + detectionStart);
-        System.out.println("Header region: [0 - " + entropyStart + "] (will be included in first fragment)");
+        System.out.println(
+                "Header region: [" + jpegHeaderStart + " - " + entropyStart + "] (will be included in first fragment)");
         System.out.println("Scanning entire file to detect all fragments (no MCU limit)");
 
         // STATE MACHINE: OUTSIDE_FRAGMENT ↔ INSIDE_FRAGMENT
@@ -224,11 +250,14 @@ public class JpegBaseline {
                         // TRANSITION: OUTSIDE_FRAGMENT → INSIDE_FRAGMENT
                         // Found a valid JPEG sequence!
 
-                        // For the FIRST fragment, extend start back to byte 0 to include header
-                        if (isFirstFragment && entropyStart > 0) {
-                            fragmentStartOffset = 0; // Start from byte 0 to include header
+                        // For the FIRST fragment, extend start back to JPEG header start to include
+                        // header
+                        if (isFirstFragment && entropyStart > jpegHeaderStart) {
+                            fragmentStartOffset = jpegHeaderStart; // Start from JPEG header to include SOI and all
+                                                                   // header markers
                             System.out.println(
-                                    "✓ FRAGMENT START at offset 0 (including header [0-" + entropyStart + "])");
+                                    "✓ FRAGMENT START at offset " + jpegHeaderStart + " (including header ["
+                                            + jpegHeaderStart + "-" + entropyStart + "])");
                             System.out.println("  Entropy section starts at offset " + firstConsecutiveValidMCUOffset +
                                     " (MCU " + mcuIndex + ", " + consecutiveValidMCUs + " valid MCUs confirmed)");
                             isFirstFragment = false;

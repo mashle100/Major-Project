@@ -10,8 +10,28 @@ import java.util.Random;
 
 public class ImageFragmenter {
 
+    private static final String RECONSTRUCTED_DIR = "reconstructed_images";
     private static final byte[] JPEG_HEADER = { (byte) 0xFF, (byte) 0xD8 };
     private static final byte[] JPEG_FOOTER = { (byte) 0xFF, (byte) 0xD9 };
+
+    /**
+     * Finds the start of JPEG header (SOI marker position).
+     * In valid JPEGs, this is always at byte 0, but we detect it explicitly.
+     * 
+     * @param data JPEG image data
+     * @return Offset where JPEG header starts (SOI marker position)
+     */
+    private static int findJpegHeaderStart(byte[] data) {
+        // Look for SOI marker (0xFFD8)
+        for (int i = 0; i < Math.min(data.length - 1, 100); i++) {
+            if ((data[i] & 0xFF) == 0xFF && (data[i + 1] & 0xFF) == 0xD8) {
+                System.out.println("Found JPEG SOI (Start of Image) marker at offset: " + i);
+                return i;
+            }
+        }
+        System.out.println("Warning: SOI marker not found in first 100 bytes, assuming offset 0");
+        return 0; // Default to 0 if not found
+    }
 
     /**
      * Fragment a JPEG image with fixed block sizes
@@ -32,6 +52,10 @@ public class ImageFragmenter {
 
         System.out.println("=== Multi-Point Random Fragmentation ===");
         System.out.println("Image size: " + imageData.length + " bytes");
+
+        // Find JPEG header start (SOI marker position)
+        int jpegHeaderStart = findJpegHeaderStart(imageData);
+        System.out.println("JPEG header starts at byte: " + jpegHeaderStart);
 
         // Use structural parser to find TRUE entropy region (deterministic,
         // marker-based)
@@ -66,24 +90,25 @@ public class ImageFragmenter {
             System.out.println("Total file size: " + totalFileSize + " bytes");
             System.out.println("This will create 1 fragment (no insertions)");
         } else {
-            // Create fragmentation with insertions starting from byte 0
+            // Create fragmentation with insertions starting from JPEG header start
             final int FIRST_BLOCK_SIZE = 4 * 1024; // 4KB
             final int SECOND_BLOCK_SIZE = 8 * 1024; // 8KB
 
-            System.out.println("\n=== Generating Fixed Block Insertion Points (from byte 0) ===");
-            System.out.println("Pattern: [4KB from start] + [" + insertionSizeKB + "KB noise] + [8KB] + ["
+            System.out.println("\n=== Generating Fixed Block Insertion Points (from JPEG header start) ===");
+            System.out.println("Pattern: [4KB from header start at byte " + jpegHeaderStart + "] + [" + insertionSizeKB
+                    + "KB noise] + [8KB] + ["
                     + insertionSizeKB + "KB noise] + [remaining]");
             System.out.println("Total file size: " + totalFileSize + " bytes");
 
-            // First insertion point: after 4KB from byte 0
-            int firstInsertionPoint = FIRST_BLOCK_SIZE;
+            // First insertion point: after 4KB from JPEG header start
+            int firstInsertionPoint = jpegHeaderStart + FIRST_BLOCK_SIZE;
             if (firstInsertionPoint < imageData.length) {
                 insertionPoints.add(firstInsertionPoint);
                 System.out.println("First insertion point (after 4KB from start): " + firstInsertionPoint);
             }
 
-            // Second insertion point: after 4KB + 8KB from byte 0
-            int secondInsertionPoint = FIRST_BLOCK_SIZE + SECOND_BLOCK_SIZE;
+            // Second insertion point: after 4KB + 8KB from JPEG header start
+            int secondInsertionPoint = jpegHeaderStart + FIRST_BLOCK_SIZE + SECOND_BLOCK_SIZE;
             if (secondInsertionPoint < imageData.length) {
                 insertionPoints.add(secondInsertionPoint);
                 System.out.println("Second insertion point (after 12KB from start): " + secondInsertionPoint);
@@ -94,11 +119,19 @@ public class ImageFragmenter {
 
             System.out.println("Final insertion points: " + insertionPoints);
             System.out.println("This will create " + (insertionPoints.size() + 1) + " fragments");
+            System.out.println("  Fragment 1: [" + jpegHeaderStart + " - " + firstInsertionPoint
+                    + "] = 4KB from header start (includes header)");
+            System.out.println("  Noise Insertion: " + (insertionSizeKB * 1024) + " bytes");
+            System.out.println("  Fragment 2: [" + firstInsertionPoint + " - " + secondInsertionPoint + "] = 8KB");
+            System.out.println("  Noise Insertion: " + (insertionSizeKB * 1024) + " bytes");
+            System.out.println("  Fragment 3: [" + secondInsertionPoint + " - " + imageData.length + "] = remaining");
         }
 
-        // STEP 3-5: Create fragmented image with tracked boundaries (from byte 0)
-        FragmentationInfo fragmentInfo = createMultiFragmentImage(imageData, 0, insertionPoints, imageData.length,
-                random, insertionSizeKB);
+        // STEP 3-5: Create fragmented image with tracked boundaries (from JPEG header
+        // start)
+        FragmentationInfo fragmentInfo = createMultiFragmentImage(imageData, jpegHeaderStart, headerEnd,
+                insertionPoints,
+                footerStart, random, insertionSizeKB);
 
         Files.write(outputPath, fragmentInfo.fragmentedData);
 
@@ -198,7 +231,7 @@ public class ImageFragmenter {
         return (data.length * 4) / 5;
     }
 
-    private static FragmentationInfo createMultiFragmentImage(byte[] original, int entropyStart,
+    private static FragmentationInfo createMultiFragmentImage(byte[] original, int jpegHeaderStart, int entropyStart,
             List<Integer> insertionPoints, int entropyEnd, Random random, int insertionSizeKB) throws IOException {
         /**
          * Creates fragmented JPEG with proper partition semantics:
@@ -218,18 +251,19 @@ public class ImageFragmenter {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         List<FragmentDetail> fragmentDetails = new ArrayList<>();
 
-        System.out.println("\n=== Creating Multi-Fragment Image (Fixed Block Pattern from byte 0) ===");
+        System.out.println("\n=== Creating Multi-Fragment Image (Fixed Block Pattern from JPEG header) ===");
         System.out.println("STEP 1: File boundaries:");
-        System.out.println("  Start = 0 bytes (including header)");
+        System.out.println("  Start = " + jpegHeaderStart + " bytes (JPEG header/SOI marker)");
         System.out.println("  End   = " + entropyEnd + " bytes");
         System.out.println("  Total: " + entropyEnd + " bytes");
         System.out.println("\nSTEP 2: Insertion points (N=" + insertionPoints.size() + "): " + insertionPoints);
         System.out.println("  This creates " + (insertionPoints.size() + 1) + " fragments");
         System.out.println("\nSTEP 3-4: Applying insertions with fixed length [" + insertionSizeKB + " KB]...");
 
-        // Build GROUND TRUTH partition: split [0, entropyEnd] at each insertion point
+        // Build GROUND TRUTH partition: split [jpegHeaderStart, entropyEnd] at each
+        // insertion point
         List<Integer> partitionBoundaries = new ArrayList<>();
-        partitionBoundaries.add(0); // Start from byte 0 (SOI marker)
+        partitionBoundaries.add(jpegHeaderStart); // Start from JPEG header (SOI marker)
         partitionBoundaries.addAll(insertionPoints); // Already sorted
         partitionBoundaries.add(entropyEnd);
 
@@ -552,6 +586,251 @@ public class ImageFragmenter {
             this.actualFragmentPoint = actualFragmentPoint;
             this.success = success;
             this.errorMessage = errorMessage;
+        }
+    }
+
+    /**
+     * Fragment a JPEG image using a custom user-defined block structure.
+     * Blocks can be either JPEG blocks (4KB from original) or noise blocks.
+     * 
+     * @param originalImagePath Path to the original JPEG image
+     * @param outputPath        Path where the fragmented image will be saved
+     * @param blockStructure    List of blocks defining the fragmentation pattern
+     *                          Each block has: type (jpeg/noise), blockIndex,
+     *                          noiseId, size
+     * @return FragmentationInfo containing all fragment details for comparison
+     */
+    public static FragmentationInfo fragmentImageWithCustomStructure(
+            Path originalImagePath,
+            Path outputPath,
+            List<java.util.Map<String, Object>> blockStructure) throws IOException {
+
+        byte[] imageData = Files.readAllBytes(originalImagePath);
+        Random random = new Random();
+
+        System.out.println("=== Custom Block Structure Fragmentation ===");
+        System.out.println("Original image size: " + imageData.length + " bytes");
+        System.out.println("Block structure size: " + blockStructure.size() + " blocks");
+
+        // Find JPEG header start
+        int jpegHeaderStart = findJpegHeaderStart(imageData);
+        System.out.println("JPEG header starts at byte: " + jpegHeaderStart);
+
+        // Parse JPEG structure
+        JpegStructuralParser.JpegEntropyRegion entropyRegion = JpegStructuralParser.findEntropyRegion(imageData);
+        if (!entropyRegion.valid) {
+            throw new IOException("Invalid JPEG structure: " + entropyRegion.errorMessage);
+        }
+
+        int headerEnd = entropyRegion.entropyStartOffset;
+        int footerStart = entropyRegion.entropyEndOffset;
+
+        System.out.println("Entropy region: [" + headerEnd + " - " + footerStart + "]");
+
+        // Check if first block is noise - if so, we need to ensure JPEG header is
+        // detectable
+        boolean startsWithNoise = false;
+        if (!blockStructure.isEmpty()) {
+            String firstBlockType = (String) blockStructure.get(0).get("type");
+            startsWithNoise = "noise".equals(firstBlockType);
+        }
+
+        if (startsWithNoise) {
+            System.out.println("⚠ WARNING: Fragmentation starts with noise. Detection may need to skip noise.");
+        }
+
+        // Build the fragmented image by assembling blocks
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        List<FragmentDetail> fragments = new ArrayList<>();
+
+        int currentOutputOffset = 0;
+        int currentOriginalOffset = jpegHeaderStart; // Start from JPEG header
+        int fragmentNumber = 1;
+        int totalInsertedBytes = 0;
+        int fragmentStartInOutput = 0;
+        int fragmentStartInOriginal = jpegHeaderStart;
+        int noiseBeforeJpeg = 0; // Track noise inserted before first JPEG block
+        boolean jpegStarted = false;
+
+        System.out.println("\n=== Building Custom Block Structure ===");
+
+        for (int i = 0; i < blockStructure.size(); i++) {
+            java.util.Map<String, Object> block = blockStructure.get(i);
+            String type = (String) block.get("type");
+
+            if ("jpeg".equals(type)) {
+                // JPEG block - copy 4KB from original
+                Number blockIndexNum = (Number) block.get("blockIndex");
+                int blockIndex = blockIndexNum.intValue();
+
+                int blockStart = jpegHeaderStart + (blockIndex * 4096);
+                int blockEnd = Math.min(blockStart + 4096, imageData.length);
+                int blockSize = blockEnd - blockStart;
+
+                System.out.println("Block " + (i + 1) + ": JPEG block #" + blockIndex +
+                        " [" + blockStart + "-" + blockEnd + "] -> " + blockSize + " bytes");
+
+                // Copy JPEG block data
+                outputStream.write(imageData, blockStart, blockSize);
+
+                // Mark that JPEG has started
+                if (!jpegStarted) {
+                    jpegStarted = true;
+                    noiseBeforeJpeg = currentOutputOffset;
+                    System.out.println("  -> First JPEG block starts at output offset " + currentOutputOffset +
+                            " (" + noiseBeforeJpeg + " bytes of noise before)");
+                }
+
+                currentOriginalOffset = blockEnd;
+                currentOutputOffset += blockSize;
+
+            } else if ("noise".equals(type)) {
+                // Noise block - generate random bytes
+                Number sizeNum = (Number) block.get("size");
+                int noiseSize = sizeNum.intValue();
+                Number noiseIdNum = (Number) block.get("noiseId");
+                int noiseId = noiseIdNum != null ? noiseIdNum.intValue() : i;
+
+                System.out.println("Block " + (i + 1) + ": Noise block #" + noiseId +
+                        " -> " + noiseSize + " bytes");
+
+                // Create a fragment boundary before noise insertion
+                if (fragmentStartInOutput < currentOutputOffset) {
+                    FragmentDetail fragment = new FragmentDetail(
+                            fragmentNumber,
+                            fragmentStartInOriginal,
+                            currentOriginalOffset,
+                            fragmentStartInOutput,
+                            currentOutputOffset,
+                            currentOutputOffset, // insertionOffset (where noise goes)
+                            noiseSize,
+                            currentOriginalOffset // insertion point in original
+                    );
+                    fragments.add(fragment);
+                    System.out.println("  -> Created " + fragment);
+                    fragmentNumber++;
+                }
+
+                // Generate random noise
+                byte[] noise = new byte[noiseSize];
+                random.nextBytes(noise);
+
+                // Avoid 0xFF to prevent false JPEG markers
+                for (int j = 0; j < noise.length; j++) {
+                    if ((noise[j] & 0xFF) == 0xFF) {
+                        noise[j] = (byte) 0xFE;
+                    }
+                }
+
+                outputStream.write(noise);
+                currentOutputOffset += noiseSize;
+                totalInsertedBytes += noiseSize;
+
+                // Start next fragment after noise
+                fragmentStartInOutput = currentOutputOffset;
+                fragmentStartInOriginal = currentOriginalOffset;
+            }
+        }
+
+        // Create final fragment if there's remaining data
+        if (fragmentStartInOutput < currentOutputOffset) {
+            FragmentDetail fragment = new FragmentDetail(
+                    fragmentNumber,
+                    fragmentStartInOriginal,
+                    currentOriginalOffset,
+                    fragmentStartInOutput,
+                    currentOutputOffset,
+                    currentOutputOffset,
+                    0, // No insertion after final fragment
+                    currentOriginalOffset);
+            fragments.add(fragment);
+            System.out.println("Final " + fragment);
+        }
+
+        byte[] fragmentedData = outputStream.toByteArray();
+
+        System.out.println("\n=== Custom Fragmentation Complete ===");
+        System.out.println("Total fragments created: " + fragments.size());
+        System.out.println("Total inserted bytes: " + totalInsertedBytes);
+        System.out.println("Noise before first JPEG block: " + noiseBeforeJpeg + " bytes");
+        System.out.println("Output size: " + fragmentedData.length + " bytes");
+
+        // Add detection hint: if noise is at start, add a marker
+        if (noiseBeforeJpeg > 0) {
+            System.out.println("⚠ DETECTION HINT: First JPEG block (SOI marker) starts at byte " + noiseBeforeJpeg);
+            System.out.println("   Detector should skip first " + noiseBeforeJpeg + " bytes to find JPEG header");
+        }
+
+        // Write to output file
+        Files.write(outputPath, fragmentedData);
+        System.out.println("✓ Written to: " + outputPath);
+
+        return new FragmentationInfo(
+                fragmentedData,
+                fragments,
+                headerEnd,
+                footerStart,
+                totalInsertedBytes,
+                imageData.length,
+                fragmentedData.length);
+    }
+
+    /**
+     * Reconstruct image from detected boundaries by extracting detected fragments
+     */
+    public static String reconstructImageFromDetection(String fragmentedFilePath,
+            List<List<Integer>> detectedBoundaries) {
+        try {
+            System.out.println("\n=== Reconstructing Image from Detected Boundaries ===");
+
+            // Ensure reconstructed directory exists in project root
+            File reconstructedDir = new File(System.getProperty("user.dir"), RECONSTRUCTED_DIR);
+            if (!reconstructedDir.exists()) {
+                reconstructedDir.mkdirs();
+                System.out.println("Created reconstructed directory: " + reconstructedDir.getAbsolutePath());
+            }
+
+            File fragmentedFile = new File(fragmentedFilePath);
+            if (!fragmentedFile.exists()) {
+                System.err.println("Fragmented file not found: " + fragmentedFilePath);
+                return null;
+            }
+
+            byte[] fragmentedData = Files.readAllBytes(fragmentedFile.toPath());
+            System.out.println("Fragmented file size: " + fragmentedData.length + " bytes");
+            System.out.println("Number of detected fragments: " + detectedBoundaries.size());
+
+            // Create output file in reconstructed directory
+            String reconstructedFileName = "reconstructed_" + fragmentedFile.getName();
+            File reconstructedFile = new File(reconstructedDir, reconstructedFileName);
+
+            try (FileOutputStream fos = new FileOutputStream(reconstructedFile)) {
+                // Extract and concatenate all detected fragments
+                for (int i = 0; i < detectedBoundaries.size(); i++) {
+                    List<Integer> boundary = detectedBoundaries.get(i);
+                    int start = boundary.get(0);
+                    int end = boundary.get(1);
+                    int length = end - start;
+
+                    System.out.println("Fragment " + (i + 1) + ": [" + start + "-" + end + "] = " + length + " bytes");
+
+                    if (start >= 0 && end <= fragmentedData.length && start < end) {
+                        fos.write(fragmentedData, start, length);
+                    } else {
+                        System.err.println("Invalid boundary: [" + start + "-" + end + "]");
+                    }
+                }
+            }
+
+            System.out.println("Reconstructed image saved: " + reconstructedFile.getAbsolutePath());
+            System.out.println("Reconstructed image size: " + reconstructedFile.length() + " bytes");
+
+            return reconstructedFileName;
+
+        } catch (Exception e) {
+            System.err.println("Error reconstructing image: " + e.getMessage());
+            e.printStackTrace();
+            return null;
         }
     }
 }
