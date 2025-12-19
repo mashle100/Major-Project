@@ -49,13 +49,6 @@
                         <p class="builder-info">All JPEG blocks are pre-placed in the structure below. Drag noise blocks between them to create fragmentation points.</p>
                         
                         <div class="builder-container">
-                            <!-- Original Image Blocks (Reference) -->
-                            <div class="original-blocks-section">
-                                <h4>📄 Original JPEG Blocks (Reference Only)</h4>
-                                <p style="font-size: 0.9em; color: #666; margin-top: 5px;">These blocks are already placed in the structure below</p>
-                                <div id="originalBlocks" class="blocks-container"></div>
-                            </div>
-
                             <!-- Noise Block Pool -->
                             <div class="noise-blocks-section">
                                 <h4>🔀 Noise Blocks (4KB) - Drag to insert</h4>
@@ -80,6 +73,7 @@
                                 <div class="structure-actions">
                                     <button id="clearStructureBtn" class="btn btn-secondary">Remove All Noise</button>
                                     <button id="applyStructureBtn" class="btn btn-success">Apply & Fragment</button>
+                                    <button id="analyzeAgainBtn" class="btn btn-primary" style="display: none;">🔄 Analyze Again</button>
                                 </div>
                             </div>
                         </div>

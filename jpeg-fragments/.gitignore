@@ -12,7 +12,7 @@ dependency-reduced-pom.xml
 # Runtime directories
 uploads/
 fragmented/
-
+reconstructed_images/
 # Test data
 test/
 Wikipedia_dataset_230k_filenames_for_validating_jpeg_validator.txt

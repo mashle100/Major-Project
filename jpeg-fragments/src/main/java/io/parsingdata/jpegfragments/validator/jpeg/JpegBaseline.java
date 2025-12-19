@@ -127,8 +127,9 @@ public class JpegBaseline {
         final int MIN_MCUS_TO_START_FRAGMENT = 2; // Need 2 consecutive valid MCUs to confirm fragment start (lowered
                                                   // from 4)
         final int MIN_FRAGMENT_LENGTH_BYTES = 1000; // Minimum bytes to consider a valid fragment (lowered from 5120)
-        final int MAX_SINGLE_ERROR_RECOVERY = 10240; // Max bytes to scan after single error (increased to 10KB to
-                                                     // handle 8KB noise insertions)
+        // Max bytes to scan forward when trying to recover after an error.
+        // Here we allow recovery to pass through up to ~30KB of noise.
+        final int MAX_SINGLE_ERROR_RECOVERY = 30 * 1024; // 30KB
 
         // Scan until we reach actual end of stream or EOI, not based on original MCU
         // count
@@ -177,7 +178,7 @@ public class JpegBaseline {
                             // Try to recover / find more fragments after this EOI
                             RecoveryResult recovery = attemptFragmentRecovery(
                                     bitStream, input, validator, mcuIndex, restartInterval,
-                                    MAX_SINGLE_ERROR_RECOVERY * 2);
+                                    MAX_SINGLE_ERROR_RECOVERY);
                             if (!recovery.success) {
                                 System.out.println("  No more valid JPEG sequences after EOI. Stopping detection.");
                                 break; // really done

@@ -420,40 +420,19 @@ function createResultCard(result) {
                     </div>
                 </div>
                 
-                ${result.fragmentDetails && result.fragmentDetails.length > 0 ? `
-                    <div style="margin: 15px 0; padding: 12px; background: #f8f9fa; border-left: 4px solid #6c757d; border-radius: 4px;">
-                        <div style="font-size: 13px; color: #495057;">
-                            <strong>🎲 Fragmentation Method:</strong> 
-                            ${result.totalFragments - 1} insertion points with evenly-spaced distribution (±20% variance). 
-                            Each insertion: <strong>200-900 bytes</strong> of random noise. 
-                            <br><strong>🔍 Detection Method:</strong> 
-                            Rule-based JPEG decoder scans entropy bitstream, finding continuous regions that satisfy 
-                            Huffman decoding, RLE bounds, and MCU structure requirements.
-                        </div>
-                    </div>
-                ` : ''}
+
                 
                 <!-- Created Fragments: Before and After -->
                 ${result.fragmentDetails && result.fragmentDetails.length > 0 ? `
                     <div class="fragment-details-section">
                         <h3 class="section-title">📍 Ground Truth Fragment Boundaries</h3>
-                        <div style="margin: 10px 0; padding: 12px; background: #e7f3ff; border-left: 4px solid #0d6efd; border-radius: 4px;">
-                            <div style="font-size: 13px; color: #084298; line-height: 1.6;">
-                                <strong>📊 Fragment Structure:</strong> ${result.fragmentDetails.length} segments created by inserting 
-                                random noise (200-900 bytes) at evenly-spaced positions within the entropy region 
-                                [${result.originalEntropyStart ? result.originalEntropyStart.toLocaleString() : 'N/A'}, 
-                                ${result.originalEntropyEnd ? result.originalEntropyEnd.toLocaleString() : 'N/A'}] bytes. 
-                                Each segment represents continuous valid JPEG entropy data.
-                            </div>
-                        </div>
+
                         <table class="fragments-table">
                             <thead>
                                 <tr>
                                     <th rowspan="2">#</th>
                                     <th colspan="2" style="background: rgba(25, 135, 84, 0.1);">Original JPEG (Before) - GROUND TRUTH</th>
-                                    <th rowspan="2" style="background: rgba(220, 53, 69, 0.1);">Noise Inserted After Segment</th>
                                     <th colspan="2" style="background: rgba(13, 110, 253, 0.1);">Fragmented Output (After)</th>
-                                    <th rowspan="2">Noise Length</th>
                                 </tr>
                                 <tr>
                                     <th style="background: rgba(25, 135, 84, 0.1);">Start</th>
@@ -471,10 +450,8 @@ function createResultCard(result) {
                                         <td><strong>${detail.fragmentNumber}</strong></td>
                                         <td style="background: rgba(25, 135, 84, 0.05); font-weight: 600;">${formatBytes(detail.originalStartOffset)}</td>
                                         <td style="background: rgba(25, 135, 84, 0.05); font-weight: 600; ${isLastSegment ? 'border: 3px solid #198754; box-shadow: 0 0 5px rgba(25, 135, 84, 0.3);' : ''}">${formatBytes(detail.originalEndOffset)}${isLastSegment ? ' <span style="color: #198754; font-size: 16px;">✓</span>' : ''}</td>
-                                        <td style="background: rgba(220, 53, 69, 0.05); ${hasInsertion ? 'color: #dc3545; font-weight: 600;' : 'color: #999; font-style: italic;'}">${hasInsertion ? 'At ' + formatBytes(detail.insertionPointInOriginal) : '(None - Last Segment)'}</td>
                                         <td style="color: #0d6efd; font-weight: 600; background: rgba(13, 110, 253, 0.05);">${formatBytes(detail.outputStartOffset)}</td>
                                         <td style="color: #0d6efd; font-weight: 600; background: rgba(13, 110, 253, 0.05);">${formatBytes(detail.outputEndOffset)}</td>
-                                        <td style="${hasInsertion ? 'color: #dc3545; font-weight: 600;' : 'color: #999;'}">${hasInsertion ? formatBytes(detail.insertionLength) : '0 bytes'}</td>
                                     </tr>
                                 `;
                                 }).join('')}
@@ -617,6 +594,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const addNoiseBlockBtn = document.getElementById('addNoiseBlockBtn');
     const clearStructureBtn = document.getElementById('clearStructureBtn');
     const applyStructureBtn = document.getElementById('applyStructureBtn');
+    const analyzeAgainBtn = document.getElementById('analyzeAgainBtn');
     const targetStructure = document.getElementById('targetStructure');
     
     if (addNoiseBlockBtn) {
@@ -629,6 +607,10 @@ document.addEventListener('DOMContentLoaded', () => {
     
     if (applyStructureBtn) {
         applyStructureBtn.addEventListener('click', applyStructureAndFragment);
+    }
+    
+    if (analyzeAgainBtn) {
+        analyzeAgainBtn.addEventListener('click', analyzeAgain);
     }
     
     if (targetStructure) {
@@ -653,9 +635,6 @@ function initializeBuilder(file) {
         const blockSize = 4096;
         const numBlocks = Math.ceil(originalImageSize / blockSize);
         
-        // Display original blocks (for reference only)
-        displayOriginalBlocks(numBlocks, blockSize);
-        
         // Reset and auto-populate structure with all JPEG blocks
         blockStructure = [];
         clearStructure();
@@ -663,39 +642,6 @@ function initializeBuilder(file) {
     };
     
     reader.readAsArrayBuffer(file);
-}
-
-function displayOriginalBlocks(numBlocks, blockSize) {
-    const container = document.getElementById('originalBlocks');
-    container.innerHTML = '';
-    
-    for (let i = 0; i < numBlocks; i++) {
-        const startByte = i * blockSize;
-        const endByte = Math.min((i + 1) * blockSize, originalImageSize);
-        const actualSize = endByte - startByte;
-        
-        const block = document.createElement('div');
-        block.className = 'block jpeg-block';
-        block.draggable = true;
-        block.dataset.type = 'jpeg';
-        block.dataset.blockIndex = i;
-        block.dataset.size = actualSize;
-        block.id = `jpeg-block-${i}`; // Add ID for tracking
-        block.innerHTML = `
-            <div class="block-label">Block ${i + 1}</div>
-            <div class="block-size">${formatBytes(actualSize)}</div>
-            <div class="block-size">[${startByte}-${endByte}]</div>
-        `;
-        
-        block.addEventListener('dragstart', handleBlockDragStart);
-        block.addEventListener('dragend', handleBlockDragEnd);
-        // Original blocks are for reference only - already in structure
-        block.style.opacity = '0.5';
-        block.style.cursor = 'default';
-        block.draggable = false;
-        
-        container.appendChild(block);
-    }
 }
 
 function autoPopulateStructure(numBlocks, blockSize) {
@@ -1087,12 +1033,6 @@ function clearStructure() {
 }
 
 function clearBuilder() {
-    // Clear original blocks
-    const originalBlocks = document.getElementById('originalBlocks');
-    if (originalBlocks) {
-        originalBlocks.innerHTML = '';
-    }
-    
     // Clear noise blocks
     const noiseBlocks = document.getElementById('noiseBlocks');
     if (noiseBlocks) {
@@ -1215,6 +1155,12 @@ async function applyStructureAndFragment() {
                 imageComparisonSection.style.display = 'block';
             }
             
+            // Show Analyze Again button after successful fragmentation
+            const analyzeAgainBtn = document.getElementById('analyzeAgainBtn');
+            if (analyzeAgainBtn) {
+                analyzeAgainBtn.style.display = 'inline-block';
+            }
+            
             resultsSection.scrollIntoView({ behavior: 'smooth' });
         } else {
             alert('Error: ' + (data.error || 'Unknown error occurred'));
@@ -1274,6 +1220,68 @@ function displayImageComparison(result) {
             msg.textContent = 'No reconstruction available (no fragments detected)';
             container.appendChild(msg);
         }
+    }
+}
+
+async function analyzeAgain() {
+    if (blockStructure.length === 0) {
+        alert('No fragmentation structure available. Please fragment an image first.');
+        return;
+    }
+    
+    if (!currentImageFile) {
+        alert('No image file available. Please upload and fragment an image first.');
+        return;
+    }
+    
+    console.log('Re-running detection with existing structure:', blockStructure);
+    
+    // Show loading
+    showLoading(true);
+    
+    try {
+        const formData = new FormData();
+        formData.append('files', currentImageFile);
+        formData.append('fragment', 'true');
+        formData.append('blockStructure', JSON.stringify(blockStructure));
+        
+        const response = await fetch(`${API_BASE_URL}/analyze-custom`, {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        showLoading(false);
+        
+        if (data.success && data.results && data.results.length > 0) {
+            const result = data.results[0];
+            
+            // Display images
+            displayImageComparison(result);
+            
+            // Display results
+            displayResults(data);
+            resultsSection.style.display = 'block';
+            
+            // Show image comparison section
+            const imageComparisonSection = document.getElementById('imageComparisonSection');
+            if (imageComparisonSection) {
+                imageComparisonSection.style.display = 'block';
+            }
+            
+            resultsSection.scrollIntoView({ behavior: 'smooth' });
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error occurred'));
+        }
+    } catch (error) {
+        showLoading(false);
+        console.error('Error:', error);
+        alert('Failed to re-analyze image: ' + error.message);
     }
 }
 
