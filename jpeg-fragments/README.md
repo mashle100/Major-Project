@@ -11,7 +11,7 @@
 ### 1. Clone or Navigate to Project
 
 ```cmd
-cd path/to/jpeg-fragments
+cd path/to/Major Project/jpeg-fragments
 ```
 
 ### 2. Build the Project
@@ -35,13 +35,6 @@ Open your browser and navigate to:
 ```
 http://localhost:8080/index.html
 ```
-
-Or simply open the `index.html` file directly from:
-
-```
-src/main/resources/public/index.html
-```
-
 mvn clean compile -DskipTests spring-boot:run
 
 mvn spring-boot:run
