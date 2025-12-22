@@ -471,14 +471,33 @@ function createResultCard(result) {
                                 </tr>
                             </thead>
                             <tbody>
-                                ${result.detectedFragmentRanges.map((range, idx) => `
+                                ${result.detectedFragmentRanges.map((range, idx) => {
+                                    // Check if we have original detected values
+                                    const hasOriginalStart = range.originalStart !== undefined && range.originalStart !== null;
+                                    const hasOriginalEnd = range.originalEnd !== undefined && range.originalEnd !== null;
+                                    const startChanged = hasOriginalStart && range.originalStart !== range.start;
+                                    const endChanged = hasOriginalEnd && range.originalEnd !== range.end;
+                                    
+                                    // Format display values
+                                    const startDisplay = formatBytes(range.start);
+                                    const endDisplay = formatBytes(range.end);
+                                    const originalStartDisplay = hasOriginalStart ? formatBytes(range.originalStart) : '';
+                                    const originalEndDisplay = hasOriginalEnd ? formatBytes(range.originalEnd) : '';
+                                    
+                                    return `
                                     <tr>
                                         <td><strong>${idx + 1}</strong></td>
-                                        <td>${formatBytes(range.start)}</td>
-                                        <td>${formatBytes(range.end)}</td>
+                                        <td>
+                                            <strong>${startDisplay}</strong>
+                                            ${startChanged ? `<br><span style="color: #6c757d; font-size: 0.85em;">Raw: ${originalStartDisplay}</span>` : ''}
+                                        </td>
+                                        <td>
+                                            <strong>${endDisplay}</strong>
+                                            ${endChanged ? `<br><span style="color: #6c757d; font-size: 0.85em;">Raw: ${originalEndDisplay}</span>` : ''}
+                                        </td>
                                         <td>${formatBytes(range.end - range.start)}</td>
                                     </tr>
-                                `).join('')}
+                                `}).join('')}
                             </tbody>
                         </table>
                     </div>
@@ -540,7 +559,12 @@ function createResultCard(result) {
 }
 
 function formatBytes(bytes) {
-    return `${bytes.toLocaleString()} bytes (${(bytes / 1024).toFixed(2)} KB)`;
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    if (bytes < k) return `${bytes} B`;
+    if (bytes < k * k) return `${(bytes / k).toFixed(1)} KB`;
+    if (bytes < k * k * k) return `${(bytes / (k * k)).toFixed(1)} MB`;
+    return `${(bytes / (k * k * k)).toFixed(1)} GB`;
 }
 
 // Utility functions
@@ -622,9 +646,74 @@ function initializeBuilder(file) {
         blockStructure = [];
         clearStructure();
         autoPopulateStructure(numBlocks, blockSize);
+        
+        // Get JPEG structure info from backend
+        getJpegStructureInfo(file);
     };
     
     reader.readAsArrayBuffer(file);
+}
+
+async function getJpegStructureInfo(file) {
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const response = await fetch(`${API_BASE_URL}/jpeg-info`, {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.success && data.entropyStart) {
+            displayHeaderInfo(data);
+        } else {
+            console.error('Failed to get JPEG structure info:', data.error);
+        }
+    } catch (error) {
+        console.error('Error fetching JPEG structure info:', error);
+    }
+}
+
+function displayHeaderInfo(info) {
+    // Find or create the header info display element
+    let headerInfoDiv = document.getElementById('headerInfo');
+    if (!headerInfoDiv) {
+        headerInfoDiv = document.createElement('div');
+        headerInfoDiv.id = 'headerInfo';
+        headerInfoDiv.className = 'header-info-box';
+        
+        // Insert before the target structure section
+        const targetSection = document.querySelector('.target-structure-section');
+        if (targetSection) {
+            targetSection.parentNode.insertBefore(headerInfoDiv, targetSection);
+        }
+    }
+    
+    const headerEndBlock = info.headerEndBlock;
+    const safeBlock = info.safeNoiseStartBlock;
+    
+    headerInfoDiv.innerHTML = `
+        <h4>📋 JPEG Structure Information</h4>
+        <div class="info-content">
+            <div class="info-item">
+                <span class="info-label">Header End:</span>
+                <span class="info-value">${formatBytes(info.entropyStart)} (Block #${headerEndBlock})</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Entropy Region:</span>
+                <span class="info-value">${formatBytes(info.entropyStart)} - ${formatBytes(info.entropyEnd)}</span>
+            </div>
+            <div class="info-item important">
+                <span class="info-label">⚠️ Safe Noise Placement:</span>
+                <span class="info-value">After Block #${headerEndBlock} (Block ${safeBlock}+)</span>
+            </div>
+            <div class="info-note">
+                💡 Placing noise before Block #${safeBlock} will corrupt the JPEG header and prevent detection!
+            </div>
+        </div>
+    `;
 }
 
 function autoPopulateStructure(numBlocks, blockSize) {
@@ -708,6 +797,22 @@ function addNoiseBlock() {
 
 let draggedSourceBlock = null;
 
+// Performance optimization for large images
+let lastDragOverTarget = null;
+let lastDragOverPosition = null;
+let dragOverThrottleTimeout = null;
+
+function throttle(func, delay) {
+    let lastCall = 0;
+    return function(...args) {
+        const now = Date.now();
+        if (now - lastCall >= delay) {
+            lastCall = now;
+            func(...args);
+        }
+    };
+}
+
 function handleBlockDragStart(e) {
     draggedSourceBlock = {
         type: e.target.dataset.type,
@@ -719,12 +824,23 @@ function handleBlockDragStart(e) {
     e.dataTransfer.effectAllowed = 'copy';
     e.dataTransfer.setData('text/plain', JSON.stringify(draggedSourceBlock));
     e.target.style.opacity = '0.5';
+    
+    // Store the dragged block's size for creating space
+    window.draggedBlockSize = parseFloat(e.target.dataset.size) || 50;
 }
 
 function handleBlockDragEnd(e) {
     e.target.style.opacity = '1';
     draggedSourceBlock = null;
-    removeAllDropIndicators();
+    window.draggedBlockSize = null;
+    
+    // Clear throttle timeout
+    if (dragOverThrottleTimeout) {
+        clearTimeout(dragOverThrottleTimeout);
+        dragOverThrottleTimeout = null;
+    }
+    
+    clearDropSpace();
 }
 
 let draggedStructureBlock = null;
@@ -733,11 +849,68 @@ function removeAllDropIndicators() {
     document.querySelectorAll('.drop-indicator').forEach(indicator => indicator.remove());
 }
 
-function showDropIndicator(block, position) {
-    removeAllDropIndicators();
-    const indicator = document.createElement('div');
-    indicator.className = `drop-indicator ${position}`;
-    block.appendChild(indicator);
+function createDropSpace(block, position, draggedElement) {
+    // Performance optimization: Skip if same target and position
+    const targetId = block.dataset.blockIndex || block.dataset.noiseId || block.id;
+    const cacheKey = `${targetId}-${position}`;
+    
+    if (lastDragOverTarget === cacheKey) {
+        return; // No need to recalculate
+    }
+    
+    lastDragOverTarget = cacheKey;
+    
+    clearDropSpace();
+    
+    // Calculate the actual width of the dragged element
+    let spaceSize = 100; // Increased default fallback for visibility
+    
+    if (draggedElement) {
+        const rect = draggedElement.getBoundingClientRect();
+        spaceSize = rect.width * 0.7; // 70% of the width for better visual effect
+    } else if (draggedStructureBlock) {
+        const rect = draggedStructureBlock.getBoundingClientRect();
+        spaceSize = rect.width * 0.7;
+    }
+    
+    const targetStructure = document.getElementById('targetStructure');
+    const allBlocks = Array.from(targetStructure.children);
+    const blockIndex = allBlocks.indexOf(block);
+    
+    // Use CSS class for better performance with many blocks
+    if (position === 'before') {
+        // Shift the target block and all blocks after it
+        for (let i = blockIndex; i < allBlocks.length; i++) {
+            allBlocks[i].style.transform = `translateX(${spaceSize}px)`;
+            // Only set transition once
+            if (!allBlocks[i].style.transition) {
+                allBlocks[i].style.transition = 'transform 0.15s ease';
+            }
+        }
+    } else {
+        // Shift all blocks after the target
+        for (let i = blockIndex + 1; i < allBlocks.length; i++) {
+            allBlocks[i].style.transform = `translateX(${spaceSize}px)`;
+            if (!allBlocks[i].style.transition) {
+                allBlocks[i].style.transition = 'transform 0.15s ease';
+            }
+        }
+    }
+}
+
+function clearDropSpace() {
+    // Reset cache
+    lastDragOverTarget = null;
+    
+    const targetStructure = document.getElementById('targetStructure');
+    if (!targetStructure) return;
+    
+    const allBlocks = Array.from(targetStructure.children);
+    // Clear transforms immediately for responsiveness
+    allBlocks.forEach(block => {
+        block.style.transform = '';
+        block.style.transition = '';
+    });
 }
 
 function getDropPosition(block, clientX) {
@@ -751,10 +924,22 @@ function handleStructureBlockDragStart(e) {
     e.target.style.opacity = '0.5';
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/html', e.target.innerHTML);
+    
+    // Store the dragged block's size for creating space
+    window.draggedBlockSize = parseFloat(e.target.dataset.size) || 50; // Default to 50px if no size
 }
 
 function handleStructureBlockDragEnd(e) {
     e.target.style.opacity = '1';
+    
+    // Clear throttle timeout
+    if (dragOverThrottleTimeout) {
+        clearTimeout(dragOverThrottleTimeout);
+        dragOverThrottleTimeout = null;
+    }
+    
+    // Clear drop space and reset transforms
+    clearDropSpace();
     
     // Clean up any border styles
     const targetStructure = document.getElementById('targetStructure');
@@ -765,6 +950,7 @@ function handleStructureBlockDragEnd(e) {
     });
     
     draggedStructureBlock = null;
+    window.draggedBlockSize = null;
 }
 
 function handleStructureBlockDragOver(e) {
@@ -776,8 +962,29 @@ function handleStructureBlockDragOver(e) {
     const target = e.currentTarget;
     const position = getDropPosition(target, e.clientX);
     
-    // Show visual indicator
-    showDropIndicator(target, position);
+    // Determine which element is being dragged
+    let draggedElement = null;
+    if (draggedStructureBlock) {
+        draggedElement = draggedStructureBlock;
+    } else if (draggedSourceBlock) {
+        // Find the source element being dragged - try multiple selectors
+        if (draggedSourceBlock.noiseId) {
+            draggedElement = document.getElementById(`noise-block-${draggedSourceBlock.noiseId}`);
+        }
+        // Fallback: find by dataset matching
+        if (!draggedElement) {
+            const noiseBlocks = document.querySelectorAll('[data-noise-id]');
+            for (let block of noiseBlocks) {
+                if (block.dataset.noiseId === String(draggedSourceBlock.noiseId)) {
+                    draggedElement = block;
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Create visual space immediately (caching inside prevents redundant updates)
+    createDropSpace(target, position, draggedElement);
     
     return false;
 }
@@ -791,7 +998,7 @@ function handleStructureBlockDrop(e) {
     }
     
     const target = e.currentTarget;
-    removeAllDropIndicators();
+    clearDropSpace();
     
     // Handle reordering existing blocks in structure
     if (draggedStructureBlock && target !== draggedStructureBlock) {
@@ -856,13 +1063,13 @@ function handleTargetDragOver(e) {
 
 function handleTargetDragLeave(e) {
     e.currentTarget.classList.remove('drag-active');
-    removeAllDropIndicators();
+    clearDropSpace();
 }
 
 function handleTargetDrop(e) {
     e.preventDefault();
     e.currentTarget.classList.remove('drag-active');
-    removeAllDropIndicators();
+    clearDropSpace();
     
     // Check if this is a reordering operation
     if (draggedStructureBlock) {

@@ -33,29 +33,14 @@ public class ImageFragmenter {
         return 0; // Default to 0 if not found
     }
 
-    /**
-     * Fragment a JPEG image with fixed block sizes
-     * Pattern: [4KB original] + [xKB noise] + [8KB original] + [xKB noise] +
-     * [remaining]
-     * 
-     * @param originalImagePath Path to the original JPEG image
-     * @param outputPath        Path where the fragmented image will be saved
-     * @param fragmentCountStr  Number of fragments ("3" for fixed pattern)
-     * @param insertionSizeKB   Size of noise insertion in KB (0, 4, or 8)
-     * @return FragmentationInfo containing all fragment details for comparison
-     */
     public static FragmentationInfo fragmentImage(Path originalImagePath, Path outputPath, String fragmentCountStr,
             int insertionSizeKB)
             throws IOException {
         byte[] imageData = Files.readAllBytes(originalImagePath);
         Random random = new Random();
 
-        System.out.println("=== Multi-Point Random Fragmentation ===");
-        System.out.println("Image size: " + imageData.length + " bytes");
-
         // Find JPEG header start (SOI marker position)
         int jpegHeaderStart = findJpegHeaderStart(imageData);
-        System.out.println("JPEG header starts at byte: " + jpegHeaderStart);
 
         // Use structural parser to find TRUE entropy region (deterministic,
         // marker-based)
@@ -75,57 +60,9 @@ public class ImageFragmenter {
             throw new IOException("Invalid JPEG structure - entropy region is empty");
         }
 
-        // STEP 2: Generate Fixed Block Insertion Points starting from byte 0
-        // Pattern: [4KB from start (including header)] + [xKB noise] + [8KB] + [xKB
-        // noise] + [remaining]
-        // If insertionSize is 0, create only 1 fragment (no insertions)
         List<Integer> insertionPoints = new ArrayList<>();
 
         int totalFileSize = imageData.length;
-
-        if (insertionSizeKB == 0) {
-            // No insertion, single fragment
-            System.out.println("\n=== No Fragmentation (insertionSize = 0 KB) ===");
-            System.out.println("Pattern: [Single fragment - entire image]");
-            System.out.println("Total file size: " + totalFileSize + " bytes");
-            System.out.println("This will create 1 fragment (no insertions)");
-        } else {
-            // Create fragmentation with insertions starting from JPEG header start
-            final int FIRST_BLOCK_SIZE = 4 * 1024; // 4KB
-            final int SECOND_BLOCK_SIZE = 8 * 1024; // 8KB
-
-            System.out.println("\n=== Generating Fixed Block Insertion Points (from JPEG header start) ===");
-            System.out.println("Pattern: [4KB from header start at byte " + jpegHeaderStart + "] + [" + insertionSizeKB
-                    + "KB noise] + [8KB] + ["
-                    + insertionSizeKB + "KB noise] + [remaining]");
-            System.out.println("Total file size: " + totalFileSize + " bytes");
-
-            // First insertion point: after 4KB from JPEG header start
-            int firstInsertionPoint = jpegHeaderStart + FIRST_BLOCK_SIZE;
-            if (firstInsertionPoint < imageData.length) {
-                insertionPoints.add(firstInsertionPoint);
-                System.out.println("First insertion point (after 4KB from start): " + firstInsertionPoint);
-            }
-
-            // Second insertion point: after 4KB + 8KB from JPEG header start
-            int secondInsertionPoint = jpegHeaderStart + FIRST_BLOCK_SIZE + SECOND_BLOCK_SIZE;
-            if (secondInsertionPoint < imageData.length) {
-                insertionPoints.add(secondInsertionPoint);
-                System.out.println("Second insertion point (after 12KB from start): " + secondInsertionPoint);
-            }
-
-            // Sort insertion points (already in order, but for consistency)
-            Collections.sort(insertionPoints);
-
-            System.out.println("Final insertion points: " + insertionPoints);
-            System.out.println("This will create " + (insertionPoints.size() + 1) + " fragments");
-            System.out.println("  Fragment 1: [" + jpegHeaderStart + " - " + firstInsertionPoint
-                    + "] = 4KB from header start (includes header)");
-            System.out.println("  Noise Insertion: " + (insertionSizeKB * 1024) + " bytes");
-            System.out.println("  Fragment 2: [" + firstInsertionPoint + " - " + secondInsertionPoint + "] = 8KB");
-            System.out.println("  Noise Insertion: " + (insertionSizeKB * 1024) + " bytes");
-            System.out.println("  Fragment 3: [" + secondInsertionPoint + " - " + imageData.length + "] = remaining");
-        }
 
         // STEP 3-5: Create fragmented image with tracked boundaries (from JPEG header
         // start)
@@ -387,17 +324,6 @@ public class ImageFragmenter {
         );
     }
 
-    /**
-     * Verifies that fragment details form a valid partition
-     * 
-     * INVARIANTS:
-     * 1. First segment starts at fileStart
-     * 2. Last segment ends at fileEnd
-     * 3. Segments are contiguous: segment[i].end == segment[i+1].start
-     * 4. No overlaps, no gaps
-     * 5. Output mapping correct: outputOffset = originalOffset +
-     * totalInsertedBefore
-     */
     private static void verifyPartitionInvariants(List<FragmentDetail> fragments,
             int fileStart, int fileEnd,
             int totalInsertedBytes) {
@@ -425,7 +351,6 @@ public class ImageFragmenter {
         }
         System.out.println("✓ Last segment ends at fileEnd=" + fileEnd);
 
-        // Invariant 3: Segments are contiguous (no gaps, no overlaps)
         for (int i = 0; i < fragments.size() - 1; i++) {
             FragmentDetail current = fragments.get(i);
             FragmentDetail next = fragments.get(i + 1);
@@ -626,6 +551,7 @@ public class ImageFragmenter {
         int footerStart = entropyRegion.entropyEndOffset;
 
         System.out.println("Entropy region: [" + headerEnd + " - " + footerStart + "]");
+        System.out.println("Entropy length: " + (footerStart - headerEnd) + " bytes");
 
         // Check if first block is noise - if so, we need to ensure JPEG header is
         // detectable
@@ -692,7 +618,19 @@ public class ImageFragmenter {
                 int noiseId = noiseIdNum != null ? noiseIdNum.intValue() : i;
 
                 System.out.println("Block " + (i + 1) + ": Noise block #" + noiseId +
-                        " -> " + noiseSize + " bytes");
+                        " -> " + noiseSize + " bytes at output offset " + currentOutputOffset);
+
+                // Check if noise is being inserted inside entropy region
+                if (currentOriginalOffset >= headerEnd && currentOriginalOffset < footerStart) {
+                    System.out.println("  ⚠️ WARNING: Noise is being inserted INSIDE entropy region!");
+                    System.out.println("     Current position: " + currentOriginalOffset +
+                            ", Entropy: [" + headerEnd + "-" + footerStart + "]");
+                    System.out.println("     This will BREAK JPEG decoding - validator will fail!");
+                } else if (currentOriginalOffset < headerEnd) {
+                    System.out.println("  ℹ️ Noise is before entropy region (in header area)");
+                } else {
+                    System.out.println("  ✓ Noise is after entropy region (safe)");
+                }
 
                 // Create a fragment boundary before noise insertion
                 if (fragmentStartInOutput < currentOutputOffset) {

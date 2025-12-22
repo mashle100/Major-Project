@@ -773,6 +773,67 @@ footer {
     box-shadow: 0 2px 8px rgba(0,0,0,0.1);
 }
 
+/* Header Info Box */
+.header-info-box {
+    background: linear-gradient(135deg, #fff5e6 0%, #ffe6cc 100%);
+    padding: 20px;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    border-left: 4px solid #ff9800;
+    margin-bottom: 20px;
+}
+
+.header-info-box h4 {
+    color: #e65100;
+    margin-bottom: 15px;
+    font-size: 1.1em;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.info-content {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.info-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: white;
+    border-radius: 6px;
+    align-items: center;
+}
+
+.info-item.important {
+    background: #fff3e0;
+    border: 2px solid #ff9800;
+    font-weight: 600;
+}
+
+.info-label {
+    font-weight: 500;
+    color: #666;
+}
+
+.info-value {
+    font-weight: 600;
+    color: #333;
+    font-family: 'Courier New', monospace;
+}
+
+.info-note {
+    margin-top: 10px;
+    padding: 12px;
+    background: #ffebee;
+    border-radius: 6px;
+    color: #c62828;
+    font-size: 0.9em;
+    border-left: 3px solid #f44336;
+}
+
 .original-blocks-section {
     grid-column: 1;
     grid-row: 1;
@@ -906,6 +967,7 @@ footer {
 .target-structure .block {
     cursor: move;
     position: relative;
+    flex-shrink: 0; /* Prevent blocks from shrinking */
 }
 
 .target-structure .block .remove-btn {
@@ -1002,6 +1064,22 @@ footer {
     padding: 5px 10px;
     border-radius: 4px;
     font-size: 0.8em;
+}
+
+/* Enhanced drag feedback */
+.block[draggable="true"]:hover {
+    cursor: grab;
+    transform: scale(1.05);
+    box-shadow: 0 6px 16px rgba(102, 126, 234, 0.3);
+}
+
+.block[draggable="true"]:active {
+    cursor: grabbing;
+    opacity: 0.7;
+}
+
+.target-structure .block {
+    position: relative;
 }
 
 @media (max-width: 1200px) {

@@ -76,11 +76,12 @@ public class FragmentationController {
                         fragmentInfo = ImageFragmenter.fragmentImage(originalPath, fragmentedPath, fragmentCount,
                                 insertionSizeKB);
 
-                        // Validate the fragmented image
-                        ValidationAnalysisResult validationResult = validateImage(fragmentedPath);
+                        ValidationAnalysisResult validationResult = processValidation(fragmentedPath, 3);
 
                         // BOUNDARY SNAPPING: Snap detected boundaries to nearest 4KB boundary
-                        validationResult = snapDetectedBoundariesToKnownBoundaries(validationResult, 4096, 500);
+                        long fileSize = Files.size(fragmentedPath);
+                        validationResult = snapDetectedBoundariesToKnownBoundaries(validationResult, 4096, 768,
+                                fileSize);
 
                         // Generate reconstructed image from detected boundaries
                         String reconstructedFileName = null;
@@ -431,12 +432,13 @@ public class FragmentationController {
 
                     System.out.println("Re-validating: " + fragmentedPath.getFileName());
                     long startTime = System.currentTimeMillis();
-                    ValidationAnalysisResult validationResult = validateImage(fragmentedPath);
+                    ValidationAnalysisResult validationResult = processValidation(fragmentedPath, 3);
                     long endTime = System.currentTimeMillis();
                     System.out.println("Re-validation completed in " + (endTime - startTime) + "ms");
 
                     // BOUNDARY SNAPPING: Snap detected boundaries to nearest 4KB boundary
-                    validationResult = snapDetectedBoundariesToKnownBoundaries(validationResult, 4096, 500);
+                    long fileSize = Files.size(fragmentedPath);
+                    validationResult = snapDetectedBoundariesToKnownBoundaries(validationResult, 4096, 768, fileSize);
 
                     result.put("detectedFragmentPoint", validationResult.detectedOffset);
                     result.put("allDetectedFragments", validationResult.allDetectedOffsets);
@@ -573,6 +575,79 @@ public class FragmentationController {
         return ResponseEntity.ok(response);
     }
 
+    private ValidationAnalysisResult processValidation(Path fragmentedPath, int threshold) throws IOException {
+        ValidationAnalysisResult result = null;
+        int metric = -1;
+
+        for (int i = 0; i < threshold; i++) {
+            ValidationAnalysisResult current = validateImage(fragmentedPath);
+
+            int value = current.detectedFragmentRanges.size() * 100;
+            if (current.completed) {
+                value += 50;
+            }
+
+            if (result == null || value > metric) {
+                result = current;
+                metric = value;
+            }
+        }
+
+        return result;
+    }
+
+    @PostMapping(value = "/jpeg-info", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> getJpegInfo(@RequestParam("file") MultipartFile file) {
+        try {
+            // Save uploaded file temporarily
+            Path uploadPath = Paths.get(System.getProperty("user.dir"), UPLOAD_DIR).toAbsolutePath();
+            Files.createDirectories(uploadPath);
+
+            String originalFilename = file.getOriginalFilename();
+            Path filePath = uploadPath.resolve(originalFilename);
+            file.transferTo(filePath.toFile());
+
+            // Read file and parse JPEG structure
+            byte[] imageData = Files.readAllBytes(filePath);
+            int jpegHeaderStart = findJpegHeaderInData(imageData);
+
+            JpegStructuralParser.JpegEntropyRegion entropyRegion = JpegStructuralParser.findEntropyRegion(imageData);
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("success", true);
+            response.put("filename", originalFilename);
+            response.put("fileSize", imageData.length);
+            response.put("jpegHeaderStart", jpegHeaderStart);
+
+            if (entropyRegion.valid) {
+                response.put("entropyStart", entropyRegion.entropyStartOffset);
+                response.put("entropyEnd", entropyRegion.entropyEndOffset);
+                response.put("entropyLength", entropyRegion.entropyEndOffset - entropyRegion.entropyStartOffset);
+
+                // Calculate which block contains the entropy start (header end)
+                int blockSize = 4096;
+                int headerEndBlock = entropyRegion.entropyStartOffset / blockSize;
+                int headerEndBlockOffset = entropyRegion.entropyStartOffset % blockSize;
+
+                response.put("headerEndBlock", headerEndBlock);
+                response.put("headerEndBlockOffset", headerEndBlockOffset);
+                response.put("safeNoiseStartBlock", headerEndBlock + 1); // Safe to add noise after this block
+            } else {
+                response.put("error", "Invalid JPEG structure: " + entropyRegion.errorMessage);
+            }
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            System.err.println("Error getting JPEG info: " + e.getMessage());
+            e.printStackTrace();
+            Map<String, Object> errorResponse = new HashMap<>();
+            errorResponse.put("success", false);
+            errorResponse.put("error", e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
+        }
+    }
+
     @PostMapping(value = "/analyze-custom", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<?> analyzeWithCustomStructure(
             @RequestParam("files") MultipartFile[] files,
@@ -616,11 +691,27 @@ public class FragmentationController {
                     ImageFragmenter.FragmentationInfo fragmentInfo = ImageFragmenter
                             .fragmentImageWithCustomStructure(originalPath, fragmentedPath, blockStructure);
 
-                    // Validate
-                    ValidationAnalysisResult validationResult = validateImage(fragmentedPath);
+                    ValidationAnalysisResult validationResult = processValidation(fragmentedPath, 3);
+
+                    // Log detection results BEFORE snapping
+                    System.out.println("\n=== BEFORE SNAPPING ===");
+                    System.out.println("Validation completed: " + validationResult.completed);
+                    System.out.println("Raw detected fragments: " + validationResult.detectedFragmentRanges.size());
+                    for (Map<String, Long> range : validationResult.detectedFragmentRanges) {
+                        System.out.println("  Raw fragment: [" + range.get("start") + " - " + range.get("end") + "]");
+                    }
 
                     // Snap boundaries
-                    validationResult = snapDetectedBoundariesToKnownBoundaries(validationResult, 4096, 500);
+                    long fileSize = Files.size(fragmentedPath);
+                    System.out.println("File size: " + fileSize + " bytes");
+                    validationResult = snapDetectedBoundariesToKnownBoundaries(validationResult, 4096, 768, fileSize);
+
+                    System.out.println("\n=== AFTER SNAPPING ===");
+                    System.out.println("Snapped fragments: " + validationResult.detectedFragmentRanges.size());
+                    for (Map<String, Long> range : validationResult.detectedFragmentRanges) {
+                        System.out
+                                .println("  Snapped fragment: [" + range.get("start") + " - " + range.get("end") + "]");
+                    }
 
                     // Reconstruct image from detected (snapped) boundaries, if any
                     String reconstructedFileName = null;
@@ -820,14 +911,18 @@ public class FragmentationController {
      * Snaps detected boundaries to nearest known 4KB boundaries if within
      * tolerance.
      * Known boundaries: 0, 4KB, 8KB, 12KB, 16KB, etc.
+     * Start offsets: Discarded if not within tolerance of a 4KB boundary
+     * End offsets: Snapped using midpoint rule (round to nearest boundary)
      * 
      * @param validationResult Original validation result with detected boundaries
      * @param boundaryInterval Interval between boundaries in bytes (4096 for 4KB)
-     * @param snapTolerance    Maximum distance to snap (500 bytes)
+     * @param snapTolerance    Maximum distance to snap (768 bytes)
+     * @param fileSize         Actual file size in bytes (snapped boundaries cannot
+     *                         exceed this)
      * @return Updated validation result with snapped boundaries
      */
     private ValidationAnalysisResult snapDetectedBoundariesToKnownBoundaries(
-            ValidationAnalysisResult validationResult, int boundaryInterval, int snapTolerance) {
+            ValidationAnalysisResult validationResult, int boundaryInterval, int snapTolerance, long fileSize) {
 
         List<Map<String, Long>> snappedRanges = new ArrayList<>();
 
@@ -835,11 +930,34 @@ public class FragmentationController {
             long detectedStart = range.get("start");
             long detectedEnd = range.get("end");
 
-            // Snap start to nearest boundary
-            long snappedStart = snapToBoundary(detectedStart, boundaryInterval, snapTolerance);
+            // Snap end first using midpoint rule (needed for late recovery validation)
+            long snappedEnd = snapEndBoundaryMidpoint(detectedEnd, boundaryInterval);
 
-            // Snap end to nearest boundary
-            long snappedEnd = snapToBoundary(detectedEnd, boundaryInterval, snapTolerance);
+            // CRITICAL: Cap snapped end at file size to prevent out-of-bounds
+            // reconstruction
+            if (snappedEnd > fileSize) {
+                System.out.println(
+                        "Snapped end " + snappedEnd + " exceeds file size " + fileSize + ", capping at file size");
+                snappedEnd = fileSize;
+            }
+
+            // Snap start to nearest boundary - discard if not valid
+            // Pass snappedEnd for late entropy recovery validation
+            Long snappedStart = snapStartBoundary(detectedStart, snappedEnd, boundaryInterval, snapTolerance);
+            if (snappedStart == null) {
+                // Start offset not snappable or invalid - discard this range
+                System.out.println(
+                        "Discarding range with non-snappable start: [" + detectedStart + "-" + detectedEnd + "]");
+                continue;
+            }
+
+            // Validate fragment length: must be >= 4KB (one block)
+            long fragmentLength = snappedEnd - snappedStart;
+            if (fragmentLength < boundaryInterval) {
+                System.out.println("Discarding fragment with length < 4KB: [" + snappedStart + "-" + snappedEnd
+                        + "] (length: " + fragmentLength + " bytes)");
+                continue;
+            }
 
             // Log snapping if it occurred
             if (snappedStart != detectedStart || snappedEnd != detectedEnd) {
@@ -850,13 +968,15 @@ public class FragmentationController {
             Map<String, Long> snappedRange = new HashMap<>();
             snappedRange.put("start", snappedStart);
             snappedRange.put("end", snappedEnd);
+            snappedRange.put("originalStart", detectedStart); // Preserve original detected value
+            snappedRange.put("originalEnd", detectedEnd); // Preserve original detected value
             snappedRanges.add(snappedRange);
         }
 
-        // Update all detected offsets list as well
+        // Update all detected offsets list as well (using midpoint rule for all)
         List<Long> snappedOffsets = new ArrayList<>();
         for (Long offset : validationResult.allDetectedOffsets) {
-            snappedOffsets.add(snapToBoundary(offset, boundaryInterval, snapTolerance));
+            snappedOffsets.add(snapEndBoundaryMidpoint(offset, boundaryInterval));
         }
 
         return new ValidationAnalysisResult(
@@ -869,27 +989,91 @@ public class FragmentationController {
     }
 
     /**
-     * Snaps a detected boundary to the nearest 4KB boundary if within tolerance.
+     * Snaps a detected start boundary using a two-phase approach:
+     * 1. Strict snapping: If within ±tolerance of a 4KB boundary, snap to nearest
+     * boundary
+     * 2. Late entropy recovery: If not within tolerance, infer start as previous
+     * 4KB boundary
+     * and accept only if JPEG entropy decoding continues for at least one full 4KB
+     * block
+     * beyond the inferred boundary (i.e., snappedEnd - inferredStart >= 4096)
      * 
-     * @param detectedBoundary The detected boundary offset
+     * @param detectedBoundary The detected start boundary offset
+     * @param snappedEnd       The snapped end boundary (already computed)
      * @param boundaryInterval Interval between boundaries (4096 bytes)
-     * @param tolerance        Maximum distance to snap (500 bytes)
-     * @return Snapped boundary or original if not within tolerance
+     * @param tolerance        Maximum distance to snap (768 bytes)
+     * @return Snapped boundary or null if not valid (should discard)
      */
-    private long snapToBoundary(long detectedBoundary, int boundaryInterval, int tolerance) {
-        // Find nearest boundary (multiple of boundaryInterval)
+    private Long snapStartBoundary(long detectedBoundary, long snappedEnd, int boundaryInterval, int tolerance) {
+        // Phase 1: Strict snapping - if within tolerance, snap to nearest boundary
         long nearestBoundary = Math.round((double) detectedBoundary / boundaryInterval) * boundaryInterval;
-
-        // Calculate distance to nearest boundary
         long distance = Math.abs(detectedBoundary - nearestBoundary);
 
-        // Snap if within tolerance
         if (distance <= tolerance) {
+            // Within tolerance - use strict snapping
+            System.out.println("Strict snap: detected start " + detectedBoundary + " → " + nearestBoundary
+                    + " (distance: " + distance + " bytes)");
             return nearestBoundary;
         }
 
-        // Otherwise return original
-        return detectedBoundary;
+        // Phase 2: Late entropy recovery - infer start as previous 4KB boundary
+        long inferredStart = (detectedBoundary / boundaryInterval) * boundaryInterval;
+        long fragmentLength = snappedEnd - inferredStart;
+
+        // Accept inferred start only if at least 4KB of valid entropy decoding
+        // continues beyond it
+        if (fragmentLength >= boundaryInterval) {
+            System.out.println("Late entropy recovery: detected start " + detectedBoundary +
+                    " → inferred start " + inferredStart +
+                    " (fragment length from inferred start to snapped end: " + fragmentLength + " bytes)");
+            return inferredStart;
+        }
+
+        // Not within tolerance and insufficient decoded data from inferred start -
+        // discard
+        System.out.println("Discarding: detected start " + detectedBoundary +
+                " not within tolerance and insufficient decoded data from inferred start " +
+                inferredStart + " to snapped end " + snappedEnd +
+                " (" + fragmentLength + " bytes < 4KB)");
+        return null;
+    }
+
+    /**
+     * Normalizes fragment end boundaries using midpoint rule:
+     * - Compute lower 4KB boundary (floor)
+     * - If detected end offset lies at or beyond block midpoint (≥2048 bytes into
+     * block),
+     * snap forward to next 4KB boundary
+     * - Otherwise snap backward to lower boundary
+     * 
+     * Examples:
+     * detectedEnd=6144 → lowerBoundary=4096, remainder=2048 → 2048≥2048 → snap to
+     * 8192
+     * detectedEnd=9000 → lowerBoundary=8192, remainder=808 → 808<2048 → snap to
+     * 8192
+     * detectedEnd=6145 → lowerBoundary=4096, remainder=2049 → 2049≥2048 → snap to
+     * 8192
+     * 
+     * @param detectedBoundary The detected end boundary offset
+     * @param boundaryInterval Interval between boundaries (4096 bytes,
+     *                         midpoint=2048)
+     * @return Snapped boundary based on midpoint rule
+     */
+    private long snapEndBoundaryMidpoint(long detectedBoundary, int boundaryInterval) {
+        // Step 1: Compute lower 4KB boundary (floor)
+        long lowerBoundary = (detectedBoundary / boundaryInterval) * boundaryInterval;
+
+        // Step 2: Calculate remainder (how far into the block)
+        long remainder = detectedBoundary % boundaryInterval;
+
+        // Step 3: Apply midpoint rule
+        // If at or beyond midpoint (≥2048), snap forward to next boundary
+        // Otherwise snap backward to lower boundary
+        if (remainder >= boundaryInterval / 2) {
+            return lowerBoundary + boundaryInterval; // Snap forward
+        } else {
+            return lowerBoundary; // Snap backward
+        }
     }
 
     private ValidationAnalysisResult validateImage(Path imagePath) {
