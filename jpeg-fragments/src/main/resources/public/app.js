@@ -1424,20 +1424,21 @@ async function analyzeAgain() {
         return;
     }
     
-    console.log('Re-running detection with existing structure:', blockStructure);
+    console.log('Re-running detection on previously fragmented file:', currentImageFile.name);
     
     // Show loading
     showLoading(true);
     
     try {
-        const formData = new FormData();
-        formData.append('files', currentImageFile);
-        formData.append('fragment', 'true');
-        formData.append('blockStructure', JSON.stringify(blockStructure));
-        
-        const response = await fetch(`${API_BASE_URL}/analyze-custom`, {
+        // Call /reanalyze endpoint to re-run detection WITHOUT re-fragmenting
+        const response = await fetch(`${API_BASE_URL}/reanalyze`, {
             method: 'POST',
-            body: formData
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                filenames: [currentImageFile.name]
+            })
         });
         
         if (!response.ok) {

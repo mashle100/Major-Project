@@ -447,6 +447,30 @@ public class FragmentationController {
                     result.put("validationCompleted", validationResult.completed);
                     result.put("validationMessage", validationResult.message);
 
+                    // Reconstruct image from detected (snapped) boundaries
+                    String reconstructedFileName = null;
+                    if (validationResult != null && validationResult.detectedFragmentRanges != null
+                            && !validationResult.detectedFragmentRanges.isEmpty()) {
+                        System.out.println("\n=== Reconstructing from detected boundaries (reanalyze) ===");
+                        System.out.println("Detected fragments: " + validationResult.detectedFragmentRanges.size());
+
+                        List<List<Integer>> boundaries = new ArrayList<>();
+                        for (Map<String, Long> range : validationResult.detectedFragmentRanges) {
+                            List<Integer> boundary = new ArrayList<>();
+                            boundary.add(range.get("start").intValue());
+                            boundary.add(range.get("end").intValue());
+                            boundaries.add(boundary);
+                            System.out.println("  Boundary: [" + range.get("start") + " - " + range.get("end") + "]");
+                        }
+
+                        reconstructedFileName = ImageFragmenter.reconstructImageFromDetection(
+                                fragmentedPath.toString(), boundaries);
+                        System.out.println("Reconstructed file: " + reconstructedFileName);
+                    } else {
+                        System.out.println("No detected fragments for reconstruction in reanalyze.");
+                    }
+                    result.put("reconstructedImage", reconstructedFileName);
+
                     // ONE-TO-ONE MATCHING
                     List<Map<String, Object>> fragmentComparisons = new ArrayList<>();
                     List<ImageFragmenter.FragmentDetail> actualFragments = fragmentInfo.fragments;
@@ -811,6 +835,13 @@ public class FragmentationController {
 
                     result.put("fragmentComparisons", fragmentComparisons);
 
+                    // Store fragmentation info for re-analysis
+                    LastFragmentationInfo lastInfo = new LastFragmentationInfo();
+                    lastInfo.fragmentedPath = fragmentedPath;
+                    lastInfo.fragmentInfo = fragmentInfo;
+                    lastFragmentations.put(originalFilename, lastInfo);
+                    System.out.println("Stored fragmentation info for: " + originalFilename);
+
                 } catch (Exception e) {
                     System.err.println("Error during custom fragmentation: " + e.getMessage());
                     e.printStackTrace();
@@ -973,6 +1004,39 @@ public class FragmentationController {
             snappedRanges.add(snappedRange);
         }
 
+        // Merge adjacent fragments (where end of one equals start of next)
+        List<Map<String, Long>> mergedRanges = new ArrayList<>();
+        if (!snappedRanges.isEmpty()) {
+            Map<String, Long> currentRange = new HashMap<>(snappedRanges.get(0));
+            
+            for (int i = 1; i < snappedRanges.size(); i++) {
+                Map<String, Long> nextRange = snappedRanges.get(i);
+                
+                // Check if current range's end equals next range's start
+                if (currentRange.get("end").equals(nextRange.get("start"))) {
+                    // Merge: extend current range's end to next range's end
+                    System.out.println("Merging adjacent fragments: [" + currentRange.get("start") + "-" + 
+                        currentRange.get("end") + "] + [" + nextRange.get("start") + "-" + 
+                        nextRange.get("end") + "] → [" + currentRange.get("start") + "-" + 
+                        nextRange.get("end") + "]");
+                    currentRange.put("end", nextRange.get("end"));
+                    currentRange.put("originalEnd", nextRange.get("originalEnd"));
+                } else {
+                    // Not adjacent, save current range and start new one
+                    mergedRanges.add(currentRange);
+                    currentRange = new HashMap<>(nextRange);
+                }
+            }
+            // Add the last range
+            mergedRanges.add(currentRange);
+        }
+
+        System.out.println("\n=== AFTER MERGING ===");
+        System.out.println("Merged fragments: " + mergedRanges.size());
+        for (Map<String, Long> range : mergedRanges) {
+            System.out.println("  Merged fragment: [" + range.get("start") + " - " + range.get("end") + "]");
+        }
+
         // Update all detected offsets list as well (using midpoint rule for all)
         List<Long> snappedOffsets = new ArrayList<>();
         for (Long offset : validationResult.allDetectedOffsets) {
@@ -983,7 +1047,7 @@ public class FragmentationController {
                 validationResult.completed,
                 validationResult.detectedOffset,
                 snappedOffsets,
-                snappedRanges,
+                mergedRanges,
                 validationResult.message,
                 validationResult.phase);
     }
