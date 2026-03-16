@@ -15,6 +15,29 @@ public class ImageFragmenter {
     private static final byte[] JPEG_FOOTER = { (byte) 0xFF, (byte) 0xD9 };
 
     /**
+     * Generates random text noise using printable ASCII characters.
+     * Creates realistic text-like data including letters, numbers, spaces, and
+     * punctuation.
+     * 
+     * @param size   Required size of noise block
+     * @param random Random instance for generating random characters
+     * @return byte array containing random text characters
+     */
+    private static byte[] generateTextNoise(int size, Random random) {
+        byte[] noise = new byte[size];
+
+        // Printable ASCII range: 32 (space) to 126 (~)
+        // This includes letters, numbers, punctuation, and spaces
+        for (int i = 0; i < size; i++) {
+            // Generate random printable ASCII character (32-126)
+            noise[i] = (byte) (32 + random.nextInt(95));
+        }
+
+        System.out.println("  -> Generated " + size + " bytes of random text");
+        return noise;
+    }
+
+    /**
      * Finds the start of JPEG header (SOI marker position).
      * In valid JPEGs, this is always at byte 0, but we detect it explicitly.
      * 
@@ -611,14 +634,17 @@ public class ImageFragmenter {
                 currentOutputOffset += blockSize;
 
             } else if ("noise".equals(type)) {
-                // Noise block - generate random bytes
+                // Noise block - generate bytes based on noiseType
                 Number sizeNum = (Number) block.get("size");
                 int noiseSize = sizeNum.intValue();
                 Number noiseIdNum = (Number) block.get("noiseId");
                 int noiseId = noiseIdNum != null ? noiseIdNum.intValue() : i;
+                String noiseType = (String) block.get("noiseType");
+                if (noiseType == null)
+                    noiseType = "random";
 
                 System.out.println("Block " + (i + 1) + ": Noise block #" + noiseId +
-                        " -> " + noiseSize + " bytes at output offset " + currentOutputOffset);
+                        " (" + noiseType + ") -> " + noiseSize + " bytes at output offset " + currentOutputOffset);
 
                 // Check if noise is being inserted inside entropy region
                 if (currentOriginalOffset >= headerEnd && currentOriginalOffset < footerStart) {
@@ -649,14 +675,19 @@ public class ImageFragmenter {
                     fragmentNumber++;
                 }
 
-                // Generate random noise
+                // Generate noise based on type
                 byte[] noise = new byte[noiseSize];
-                random.nextBytes(noise);
+                if ("text".equals(noiseType)) {
+                    noise = generateTextNoise(noiseSize, random);
+                } else {
+                    // Default: random noise
+                    random.nextBytes(noise);
 
-                // Avoid 0xFF to prevent false JPEG markers
-                for (int j = 0; j < noise.length; j++) {
-                    if ((noise[j] & 0xFF) == 0xFF) {
-                        noise[j] = (byte) 0xFE;
+                    // Avoid 0xFF to prevent false JPEG markers
+                    for (int j = 0; j < noise.length; j++) {
+                        if ((noise[j] & 0xFF) == 0xFF) {
+                            noise[j] = (byte) 0xFE;
+                        }
                     }
                 }
 

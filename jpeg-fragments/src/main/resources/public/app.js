@@ -770,7 +770,7 @@ function addNoiseBlock() {
     const container = document.getElementById('noiseBlocks');
     
     // Check if noise type is implemented
-    if (noiseType === 'text' || noiseType === 'jpeg') {
+    if (noiseType === 'jpeg') {
         alert(`${noiseType.toUpperCase()} noise type is not yet implemented. Using Random for now.`);
     }
     

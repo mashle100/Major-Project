@@ -1,0 +1,1385 @@
+================================================================================
+              JPEG FRAGMENTATION DETECTION LOGIC - DETAILED
+                    Core Detection Algorithm Explained
+================================================================================
+
+TABLE OF CONTENTS
+-----------------
+1. Detection Algorithm Overview
+2. Header Detection Logic
+3. Fragment Start Detection Logic
+4. Fragment End Detection Logic
+5. Recovery & Continuation Logic
+6. Boundary Snapping Algorithm
+7. Fragment Merging Algorithm
+8. Complete Detection Flow Example
+
+
+================================================================================
+1. DETECTION ALGORITHM OVERVIEW
+================================================================================
+
+Purpose:
+--------
+Detect boundaries between valid JPEG data and inserted noise blocks by
+analyzing Huffman decoding patterns.
+
+Core Principle:
+---------------
+Valid JPEG entropy data follows strict Huffman coding rules.
+Random noise violates these rules immediately.
+Detection = identifying where valid Huffman decoding stops and starts.
+
+State Machine:
+--------------
+The algorithm operates as a 2-state machine:
+
+  OUTSIDE_FRAGMENT               INSIDE_FRAGMENT
+  (scanning for JPEG)      ↔     (decoding valid JPEG)
+        ↓                              ↓
+  Find 2+ valid MCUs            Continue decoding
+  → Start fragment              Until rule break
+                                → End fragment
+
+Key Thresholds:
+---------------
+MIN_MCUS_TO_START_FRAGMENT = 2
+  - Need 2 consecutive valid MCUs to confirm fragment start
+  - Prevents false positives from random bit patterns
+
+MIN_FRAGMENT_LENGTH_BYTES = 1000
+  - Minimum bytes to consider a valid fragment
+  - Discards tiny fragments that are likely noise
+
+MAX_SINGLE_ERROR_RECOVERY = 30720 (30KB)
+  - Maximum distance to scan forward after error
+  - Allows passing through noise blocks to find next fragment
+
+
+================================================================================
+2. HEADER DETECTION LOGIC
+================================================================================
+
+2.1 Finding JPEG Start (SOI Marker)
+------------------------------------
+Function: findJpegHeaderStart(ByteStream input)
+
+Purpose:
+  Find the Start of Image (SOI) marker which marks the beginning of JPEG data.
+
+Algorithm:
+----------
+FOR i = 0 to 99:  // Search first 100 bytes
+  
+  IF input has 2 bytes at position i:
+    Read 2 bytes
+    byte1 = bytes[0] & 0xFF
+    byte2 = bytes[1] & 0xFF
+    
+    IF byte1 == 0xFF AND byte2 == 0xD8:
+      // Found SOI marker
+      Print "Found JPEG SOI (Start of Image) marker at offset: " + i
+      RETURN i
+  
+  END IF
+
+END FOR
+
+// SOI not found in first 100 bytes
+Print "Warning: SOI marker not found, assuming offset 0"
+RETURN 0  // Default to offset 0
+
+
+Why This Matters:
+-----------------
+- Valid JPEG files start with 0xFF 0xD8 (SOI marker)
+- Fragmented files may have noise before the actual JPEG data
+- We need to identify where the real JPEG header starts
+- The first fragment will be extended back to include this header
+
+
+2.2 Including Header in First Fragment
+---------------------------------------
+Location: JpegBaseline.java, validateBaselineMcus()
+
+Logic:
+------
+jpegHeaderStart = findJpegHeaderStart(input)     // e.g., 0
+entropyStart = bitStream.getOffset()              // e.g., 651
+
+isFirstFragment = true
+
+WHEN first valid fragment is detected:
+  
+  IF isFirstFragment AND entropyStart > jpegHeaderStart:
+    
+    // Extend fragment start back to include entire header
+    fragmentStartOffset = jpegHeaderStart
+    
+    Print "✓ FRAGMENT START at offset " + jpegHeaderStart
+    Print "  (including header [" + jpegHeaderStart + "-" + entropyStart + "])"
+    Print "  Entropy section starts at offset " + entropyStart
+    
+    isFirstFragment = false
+  
+  END IF
+
+Result:
+-------
+First detected fragment: [0 - X]
+  - Includes SOI marker (0xFF 0xD8)
+  - Includes all header markers (DHT, DQT, SOF, SOS)
+  - Includes entropy-coded section
+  - Ensures reconstructed image has complete header
+
+
+Example:
+--------
+Input file structure:
+  [0-2]     SOI marker (0xFF 0xD8)
+  [2-651]   JPEG headers (DHT, DQT, SOF, SOS)
+  [651-...]  Entropy-coded data (Huffman compressed)
+
+Detection finds valid data starting at offset 651 (entropy start).
+But fragment is recorded as: [0 - endOffset]
+This includes the complete header needed for a valid JPEG.
+
+
+================================================================================
+3. FRAGMENT START DETECTION LOGIC
+================================================================================
+
+3.1 State: OUTSIDE_FRAGMENT
+----------------------------
+The algorithm is scanning for the next valid JPEG sequence.
+
+Tracking Variables:
+-------------------
+consecutiveValidMCUs = 0           // Counter for consecutive valid MCUs
+firstConsecutiveValidMCUOffset = 0 // Offset where consecutive sequence started
+insideValidFragment = false        // Currently OUTSIDE fragment
+
+
+3.2 Processing Each MCU
+------------------------
+FOR each MCU at offset offsetBeforeMCU:
+
+  Step 1: Attempt to decode MCU
+  ------------------------------
+  mcuValid = true
+  
+  // Check restart marker if needed
+  IF !validateRestartMarker():
+    mcuValid = false
+  
+  // Check all channels (luminance + chrominance)
+  FOR each channel:
+    IF !validateQuantizationArray():  // Huffman decode channel
+      mcuValid = false
+      BREAK
+  
+  Step 2: Handle validation result
+  ---------------------------------
+  IF mcuValid:
+    // ✅ MCU decodes successfully
+    
+    offsetAfterMCU = bitStream.getOffset()
+    lastValidMCUBoundary = offsetAfterMCU
+    
+    // Track consecutive valid sequence
+    IF consecutiveValidMCUs == 0:
+      firstConsecutiveValidMCUOffset = offsetBeforeMCU
+    
+    consecutiveValidMCUs++
+    
+    Step 3: Check if we have enough to start fragment
+    --------------------------------------------------
+    IF !insideValidFragment:
+      // STATE: OUTSIDE_FRAGMENT
+      
+      IF consecutiveValidMCUs >= MIN_MCUS_TO_START_FRAGMENT:
+        // We have 2+ consecutive valid MCUs - FOUND FRAGMENT START!
+        
+        // TRANSITION: OUTSIDE_FRAGMENT → INSIDE_FRAGMENT
+        
+        IF isFirstFragment:
+          // Special case: extend to JPEG header
+          fragmentStartOffset = jpegHeaderStart
+          Print "✓ FRAGMENT START at offset " + jpegHeaderStart
+          Print "  (including header [" + jpegHeaderStart + "-" + entropyStart + "])"
+          Print "  Entropy section starts at offset " + firstConsecutiveValidMCUOffset
+          Print "  (MCU " + mcuIndex + ", " + consecutiveValidMCUs + " valid MCUs confirmed)"
+          isFirstFragment = false
+        
+        ELSE:
+          // Subsequent fragments: start at first valid MCU
+          fragmentStartOffset = firstConsecutiveValidMCUOffset
+          Print "✓ FRAGMENT START at offset " + fragmentStartOffset
+          Print "  (MCU " + mcuIndex + ", " + consecutiveValidMCUs + " valid MCUs confirmed)"
+        
+        insideValidFragment = true
+        mcusInCurrentFragment = consecutiveValidMCUs
+      
+      END IF
+    
+    ELSE:
+      // STATE: INSIDE_FRAGMENT
+      // Continue accumulating MCUs
+      mcusInCurrentFragment++
+    
+    END IF
+  
+  ELSE:
+    // ❌ MCU validation failed - JPEG rule break
+    // (See Fragment End Detection Logic)
+  
+  END IF
+
+END FOR
+
+
+3.3 Why 2 Consecutive Valid MCUs?
+----------------------------------
+Problem: Random noise might accidentally produce 1 valid-looking MCU
+
+Solution: Require 2 consecutive valid MCUs to confirm real JPEG data
+
+Rationale:
+  - Probability of 1 random valid MCU: ~1/1000
+  - Probability of 2 consecutive random valid MCUs: ~1/1,000,000
+  - 2 MCUs provide high confidence while keeping detection fast
+
+Example:
+--------
+Scanning through noise:
+  Offset 20500: Invalid MCU (noise)
+  Offset 20520: Invalid MCU (noise)
+  Offset 20540: Invalid MCU (noise)
+  Offset 20561: Valid MCU ✓ (consecutiveValidMCUs = 1)
+  Offset 20585: Valid MCU ✓ (consecutiveValidMCUs = 2)
+    → FRAGMENT START at offset 20561
+  Offset 20630: Valid MCU ✓ (consecutiveValidMCUs = 3)
+  Offset 20650: Valid MCU ✓ (consecutiveValidMCUs = 4)
+  ... (continue decoding)
+
+
+3.4 Edge Case: First Fragment Header Inclusion
+-----------------------------------------------
+The first fragment gets special treatment:
+
+Normal fragment start:
+  fragmentStartOffset = firstConsecutiveValidMCUOffset
+  Example: Fragment starts at offset 24533 (first valid MCU)
+
+First fragment start:
+  fragmentStartOffset = jpegHeaderStart (typically 0)
+  firstConsecutiveValidMCUOffset might be 651 (after headers)
+  
+  Fragment recorded as: [0 - endOffset]
+  
+  This ensures the reconstructed image includes:
+    - SOI marker (0xFF 0xD8)
+    - Huffman tables (DHT)
+    - Quantization tables (DQT)
+    - Frame header (SOF)
+    - Scan header (SOS)
+    - Entropy data starting at offset 651
+
+
+================================================================================
+4. FRAGMENT END DETECTION LOGIC
+================================================================================
+
+4.1 Detecting JPEG Rule Break
+------------------------------
+While INSIDE_FRAGMENT, each MCU is validated.
+
+MCU Validation Checks:
+-----------------------
+1. Restart Marker Check:
+   - If restart interval is set and MCU count matches interval
+   - Expect RST0-RST7 marker (0xFF 0xD0 to 0xFF 0xD7)
+   - Marker must match expected sequence number
+
+2. Huffman Decoding Check:
+   - For each channel (Y, Cb, Cr):
+     * Decode DC coefficient using DC Huffman table
+     * Decode AC coefficients using AC Huffman table
+     * Check RLE bounds (run-length encoding)
+     * Verify quantization array fills to exactly 64 coefficients
+
+3. Block Structure Check:
+   - Quantization array size must not exceed 64
+   - All coefficient values must be valid
+   - Bit patterns must match Huffman table entries
+
+
+4.2 End Fragment When Rule Breaks
+----------------------------------
+Location: JpegBaseline.java, validateBaselineMcus()
+
+IF mcuValid == false:
+  // ❌ JPEG RULE BREAK
+  
+  IF insideValidFragment:
+    // STATE: INSIDE_FRAGMENT → Rule broke, end fragment
+    
+    fragmentEndOffset = lastValidMCUBoundary  // Last valid position
+    fragmentLength = fragmentEndOffset - fragmentStartOffset
+    
+    Step 1: Validate fragment length
+    ---------------------------------
+    IF fragmentLength >= MIN_FRAGMENT_LENGTH_BYTES:
+      // Fragment is long enough - accept it
+      
+      Print "✓ FRAGMENT END at offset " + fragmentEndOffset
+      Print "  (length: " + fragmentLength + " bytes, " +
+            mcusInCurrentFragment + " MCUs decoded)"
+      Print "  Reason: JPEG rule break at offset " + offsetBeforeMCU
+      
+      // Record fragment boundaries
+      detectedFragmentPoints.add(fragmentStartOffset)
+      detectedFragmentPoints.add(fragmentEndOffset)
+    
+    ELSE:
+      // Fragment too short - discard it
+      Print "  Discarding short fragment (" + fragmentLength + " bytes, " +
+            mcusInCurrentFragment + " MCUs) - below minimum threshold"
+    
+    END IF
+    
+    Step 2: Transition state
+    -------------------------
+    // TRANSITION: INSIDE_FRAGMENT → OUTSIDE_FRAGMENT
+    insideValidFragment = false
+    mcusInCurrentFragment = 0
+  
+  END IF
+  
+  Step 3: Reset consecutive counter
+  ----------------------------------
+  consecutiveValidMCUs = 0
+  firstConsecutiveValidMCUOffset = 0
+  
+  Step 4: Attempt recovery
+  -------------------------
+  // Continue searching for next fragment
+  recovery = attemptFragmentRecovery()
+  
+  IF recovery.success:
+    // Found next valid JPEG data
+    Print "  Skipped " + skippedBytes + " bytes, resuming search at offset " + currentOffset
+    CONTINUE loop in OUTSIDE_FRAGMENT state
+  
+  ELSE:
+    // No more valid data found
+    Print "  No more valid JPEG sequences found. Stopping detection."
+    BREAK loop
+  
+  END IF
+
+END IF
+
+
+4.3 Why Last Valid MCU Boundary?
+---------------------------------
+When a rule break occurs, we record the fragment end at the last
+position where decoding was successful.
+
+Example:
+--------
+Offset 20500: Valid MCU ✓
+Offset 20520: Valid MCU ✓
+Offset 20541: Valid MCU ✓  ← lastValidMCUBoundary = 20541
+Offset 20561: Invalid MCU ✗ (Huffman decode failed)
+  
+  → Fragment ends at 20541, not 20561
+  → This ensures we don't include invalid data
+
+
+4.4 Discarding Short Fragments
+-------------------------------
+Short fragments (< 1000 bytes or < 20 MCUs) are discarded.
+
+Reason:
+  - Prevent false positives from random noise
+  - Random bit patterns might accidentally decode for a few MCUs
+  - Short fragments don't represent meaningful JPEG data
+
+Example of discarded fragment:
+  Offset 20561: Valid MCU ✓
+  Offset 20585: Valid MCU ✓
+  → Fragment start at 20561
+  Offset 20630: Valid MCU ✓
+  Offset 20650: Invalid MCU ✗
+  → Fragment end at 20630
+  → Length: 69 bytes (3 MCUs)
+  → DISCARDED (too short)
+
+
+4.5 Special Case: EOI Marker
+-----------------------------
+End of Image (EOI) marker (0xFF 0xD9) marks the end of JPEG data.
+
+Detection:
+----------
+BEFORE processing each MCU:
+  peek = bitStream.peek(16 bits)
+  
+  IF peek == 0xFF 0xD9:
+    // EOI marker found
+    
+    IF insideValidFragment:
+      // Close current fragment before EOI
+      fragmentEnd = lastValidMCUBoundary
+      
+      IF fragmentLength >= MIN_FRAGMENT_LENGTH_BYTES:
+        Print "✓ FRAGMENT END before EOI at offset " + fragmentEnd
+        Record fragment
+      
+      insideValidFragment = false
+    
+    END IF
+    
+    // Skip EOI marker (16 bits)
+    bitStream.skip(16)
+    
+    // Try to find more fragments after EOI
+    recovery = attemptFragmentRecovery()
+    
+    IF recovery.success:
+      CONTINUE searching
+    ELSE:
+      STOP detection
+    
+  END IF
+
+
+================================================================================
+5. RECOVERY & CONTINUATION LOGIC
+================================================================================
+
+5.1 Purpose of Recovery
+------------------------
+When Huffman decoding fails (hits noise), we need to find the next
+valid JPEG sequence to continue detection.
+
+Problem: We're at offset X where decoding failed. Valid JPEG data might
+         resume at offset X + N (after noise block).
+
+Solution: Scan forward byte-by-byte, testing for valid JPEG patterns.
+
+
+5.2 Recovery Algorithm
+-----------------------
+Function: attemptFragmentRecovery()
+
+Input:
+  - bitStream: current position (at failure point)
+  - maxScanBytes: maximum distance to scan (30KB)
+
+Output:
+  - RecoveryResult {success: boolean, foundValidData: boolean, recoveryOffset: long}
+
+Algorithm:
+----------
+Step 1: Initialize
+------------------
+startOffset = bitStream.getOffset()
+
+// Align to byte boundary
+IF bitStream.getBitOffset() > 0:
+  bitStream.skip(8 - bitStream.getBitOffset())
+
+Print "Recovery: Scanning from offset " + bitStream.getOffset() + " for valid JPEG entropy data..."
+
+Step 2: Scan Forward
+--------------------
+FOR byteOffset = 0 to maxScanBytes - 1:
+  
+  currentOffset = bitStream.getOffset()
+  
+  Strategy 1: Check for JPEG Markers
+  -----------------------------------
+  peek = bitStream.peek(16 bits)
+  
+  IF peek available:
+    byte1 = peek[0] & 0xFF
+    byte2 = peek[1] & 0xFF
+    
+    // Restart marker: 0xFF 0xD0 to 0xFF 0xD7
+    IF byte1 == 0xFF AND (byte2 >= 0xD0 AND byte2 <= 0xD7):
+      IF restartInterval > 0:
+        Print "Recovery SUCCESS: Restart marker at offset " + currentOffset
+        RETURN success(true, true, currentOffset)
+    
+    // EOI marker: 0xFF 0xD9
+    IF byte1 == 0xFF AND byte2 == 0xD9:
+      Print "Recovery: EOI at offset " + currentOffset + " (end of entropy region)"
+      RETURN success(false, false, currentOffset)  // Not a recovery point
+    
+    // Byte stuffing: 0xFF 0x00
+    IF byte1 == 0xFF AND byte2 == 0x00:
+      // 0xFF00 is how JPEG escapes 0xFF in valid entropy data
+      Print "Recovery SUCCESS: Found byte-stuffed 0xFF00 at offset " + currentOffset
+      RETURN success(true, true, currentOffset)
+  
+  END IF
+  
+  Strategy 2: Try Huffman Decode
+  -------------------------------
+  TRY:
+    // Get DC Huffman table (luminance channel)
+    dcTable = validator.huffmanTables.get(DC).get(0)
+    
+    IF dcTable exists:
+      // Try to decode DC coefficient at current position
+      testData = bitStream.peek(dcTable.maxCodeLength)
+      
+      IF testData available:
+        matchResult = dcTable.findShortestMatch(testData)
+        
+        IF matchResult found:
+          symbol = matchResult.symbol
+          
+          // Valid DC symbol: 0-15 (magnitude category)
+          IF symbol >= 0 AND symbol <= 15:
+            bitsNeeded = matchResult.bitsMatched + symbol
+            fullData = bitStream.peek(bitsNeeded)
+            
+            IF fullData available:
+              // Successfully decoded complete DC coefficient!
+              Print "Recovery SUCCESS: Decoded valid Huffman DC symbol at offset " + currentOffset
+              RETURN success(true, true, currentOffset)
+          
+          END IF
+        
+        END IF
+      
+      END IF
+    
+    END IF
+  
+  CATCH Exception:
+    // Decode failed, continue scanning
+  
+  END TRY
+  
+  // Move forward one byte and try again
+  bitStream.skip(8)
+
+END FOR
+
+Step 3: Recovery Failed
+------------------------
+Print "Recovery FAILED: No valid data found within " + maxScanBytes + " bytes"
+RETURN success(false, false, currentOffset)
+
+
+5.3 Recovery Strategies Explained
+----------------------------------
+
+Strategy 1: Marker Detection (Fastest)
+---------------------------------------
+JPEG markers are easy to detect: 0xFF followed by specific byte.
+
+Markers we look for:
+  - RST0-RST7 (0xFF 0xD0 to 0xFF 0xD7): Restart markers
+    * Indicate valid entropy data resumes here
+    * Only if image uses restart intervals
+  
+  - Byte stuffing (0xFF 0x00):
+    * In entropy data, literal 0xFF is encoded as 0xFF 0x00
+    * Strong indicator of valid JPEG entropy coding
+    * Not a marker, but shows we're in valid data
+  
+  - EOI (0xFF 0xD9): End of image
+    * Marks end of entropy section
+    * NOT a recovery point (no more data after this)
+
+Strategy 2: Huffman Decode Test (Reliable)
+-------------------------------------------
+Try to decode a Huffman symbol at current position.
+
+If successful, we've found valid JPEG entropy data.
+
+Process:
+  1. Get DC Huffman table (defines valid code patterns)
+  2. Peek ahead by table's max code length (e.g., 16 bits)
+  3. Match bit pattern against table entries
+  4. If match found and symbol is valid (0-15 for DC)
+  5. Try to read magnitude bits (symbol specifies how many)
+  6. If all successful → found valid JPEG data
+
+Why this works:
+  - Huffman codes are carefully designed
+  - Random noise rarely matches valid codes
+  - Decoding a complete coefficient requires multiple successful steps
+  - Low probability of false positive
+
+
+5.4 Example Recovery Scenario
+------------------------------
+Fragment ends at offset 20541 due to noise:
+
+Offset 20541: Last valid MCU boundary
+Offset 20561: Huffman decode fails → Start recovery
+
+Recovery scan:
+  20561: Try decode → FAIL
+  20562: Try decode → FAIL
+  20563: Try decode → FAIL
+  ...
+  20585: Try decode → FAIL
+  20586: Try decode → FAIL
+  20587: Found 0xFF 0x00 (byte stuffing) → SUCCESS!
+    Print "Recovery SUCCESS: Found byte-stuffed 0xFF00 at offset 20587"
+    Skipped: 20587 - 20561 = 26 bytes
+    Resume search at offset 20587
+
+Continue detection from 20587 in OUTSIDE_FRAGMENT state.
+
+
+5.5 Why 30KB Max Scan Distance?
+--------------------------------
+Balance between:
+  - Finding next fragment (need to scan through noise)
+  - Performance (don't scan forever)
+  - Typical noise block size (4KB in our case)
+
+30KB allows:
+  - Scanning through multiple 4KB noise blocks
+  - Handling edge cases with larger gaps
+  - Still completing in reasonable time
+
+
+================================================================================
+6. BOUNDARY SNAPPING ALGORITHM
+================================================================================
+
+6.1 Why Snapping is Needed
+---------------------------
+Problem:
+  - Detection finds exact Huffman decode failure points
+  - These points are rarely exactly on 4KB boundaries
+  - Ground truth fragments are 4KB-aligned (file system blocks)
+  - Need to align detected boundaries to match ground truth
+
+Example:
+  Raw detected: [0-20541], [24533-33060], [36921-41015]
+  Expected:     [0-20480], [24576-32768], [36864-40960]
+  
+  Differences: 61 bytes, 43 bytes, 57 bytes
+
+
+6.2 Snapping Parameters
+------------------------
+File: FragmentationController.snapDetectedBoundariesToKnownBoundaries()
+
+Parameters:
+  - boundaryInterval: 4096 (4KB block size)
+  - snapTolerance: 768 bytes (3/4 of block size, ~18.75%)
+  - fileSize: total fragmented file size
+
+Input: List of detected fragment ranges [start, end]
+Output: List of snapped fragment ranges [start, end]
+
+
+6.3 End Boundary Snapping (Midpoint Rule)
+------------------------------------------
+Function: snapEndBoundaryMidpoint(detectedEnd, boundaryInterval)
+
+Algorithm:
+----------
+Step 1: Calculate lower boundary
+---------------------------------
+lowerBoundary = (detectedEnd / 4096) * 4096
+  // Integer division floors to nearest 4KB boundary below
+
+Step 2: Calculate remainder
+----------------------------
+remainder = detectedEnd % 4096
+  // How far into the 4KB block are we?
+
+Step 3: Apply midpoint rule
+----------------------------
+IF remainder >= 2048:  // At or past midpoint (50% of block)
+  snappedEnd = lowerBoundary + 4096  // Snap forward to next boundary
+ELSE:
+  snappedEnd = lowerBoundary         // Snap backward to lower boundary
+
+Step 4: Cap at file size
+-------------------------
+IF snappedEnd > fileSize:
+  snappedEnd = fileSize
+
+
+Example Calculations:
+---------------------
+Example 1: detectedEnd = 20541
+  lowerBoundary = (20541 / 4096) * 4096 = 5 * 4096 = 20480
+  remainder = 20541 % 4096 = 61
+  61 < 2048 → snappedEnd = 20480 (snap backward)
+
+Example 2: detectedEnd = 33060
+  lowerBoundary = (33060 / 4096) * 4096 = 8 * 4096 = 32768
+  remainder = 33060 % 4096 = 292
+  292 < 2048 → snappedEnd = 32768 (snap backward)
+
+Example 3: detectedEnd = 25000
+  lowerBoundary = (25000 / 4096) * 4096 = 6 * 4096 = 24576
+  remainder = 25000 % 4096 = 424
+  424 < 2048 → snappedEnd = 24576 (snap backward)
+
+Example 4: detectedEnd = 27000
+  lowerBoundary = (27000 / 4096) * 4096 = 6 * 4096 = 24576
+  remainder = 27000 % 4096 = 2424
+  2424 >= 2048 → snappedEnd = 24576 + 4096 = 28672 (snap forward)
+
+
+Why Midpoint Rule?
+-------------------
+- If we're past halfway through a block, we likely decoded most of it
+- Snap forward to include the full block
+- If we're in the first half, we likely only decoded part of it
+- Snap backward to exclude partial data
+- This maximizes accuracy while maintaining 4KB alignment
+
+
+6.4 Start Boundary Snapping (Two-Phase)
+----------------------------------------
+Function: snapStartBoundary(detectedStart, snappedEnd, boundaryInterval, tolerance)
+
+Two-phase approach handles different scenarios:
+  Phase 1: Strict snapping (for boundaries near 4KB marks)
+  Phase 2: Late entropy recovery (for boundaries far from marks)
+
+
+Phase 1: Strict Snapping
+-------------------------
+Step 1: Find nearest boundary
+------------------------------
+nearestBoundary = round(detectedStart / 4096) * 4096
+  // Round to nearest 4KB boundary
+
+Step 2: Calculate distance
+---------------------------
+distance = |detectedStart - nearestBoundary|
+
+Step 3: Check tolerance
+------------------------
+IF distance <= 768:  // Within 18.75% of block size
+  // Close enough to snap strictly
+  snappedStart = nearestBoundary
+  
+  Print "Strict snap: detected start " + detectedStart +
+        " → " + nearestBoundary + " (distance: " + distance + " bytes)"
+  
+  RETURN snappedStart
+
+ELSE:
+  // Distance > 768, proceed to Phase 2
+
+
+Phase 2: Late Entropy Recovery
+-------------------------------
+Used when detected start is far from nearest boundary.
+
+Scenario: Valid JPEG data actually started earlier, but detection
+          found it late (after passing through partial noise).
+
+Step 1: Infer actual start
+---------------------------
+inferredStart = (detectedStart / 4096) * 4096
+  // Floor to nearest 4KB boundary (previous block start)
+
+Step 2: Calculate fragment length
+----------------------------------
+fragmentLength = snappedEnd - inferredStart
+
+Step 3: Validate length
+------------------------
+IF fragmentLength >= 4096:  // At least one full 4KB block
+  // Sufficient decoded data from inferred start to snapped end
+  snappedStart = inferredStart
+  
+  Print "Late entropy recovery: detected start " + detectedStart +
+        " → inferred start " + inferredStart +
+        " (fragment length from inferred start to snapped end: " +
+        fragmentLength + " bytes)"
+  
+  RETURN snappedStart
+
+ELSE:
+  // Fragment too short from inferred start
+  Print "Discarding: detected start " + detectedStart +
+        " not within tolerance and insufficient decoded data from inferred start " +
+        inferredStart + " to snapped end " + snappedEnd +
+        " (" + fragmentLength + " bytes < 4KB)"
+  
+  RETURN null  // Discard this fragment
+
+
+Example Calculations:
+---------------------
+Example 1: detectedStart = 0
+  nearestBoundary = round(0 / 4096) * 4096 = 0
+  distance = |0 - 0| = 0
+  0 <= 768 → Strict snap: snappedStart = 0
+
+Example 2: detectedStart = 24533, snappedEnd = 32768
+  nearestBoundary = round(24533 / 4096) * 4096
+                  = round(5.99) * 4096 = 6 * 4096 = 24576
+  distance = |24533 - 24576| = 43
+  43 <= 768 → Strict snap: snappedStart = 24576
+
+Example 3: detectedStart = 36921, snappedEnd = 40960
+  nearestBoundary = round(36921 / 4096) * 4096
+                  = round(9.01) * 4096 = 9 * 4096 = 36864
+  distance = |36921 - 36864| = 57
+  57 <= 768 → Strict snap: snappedStart = 36864
+
+Example 4: detectedStart = 21000, snappedEnd = 28672
+  nearestBoundary = round(21000 / 4096) * 4096
+                  = round(5.13) * 4096 = 5 * 4096 = 20480
+  distance = |21000 - 20480| = 520
+  520 <= 768 → Strict snap: snappedStart = 20480
+
+Example 5: detectedStart = 22000, snappedEnd = 28672
+  nearestBoundary = round(22000 / 4096) * 4096
+                  = round(5.37) * 4096 = 5 * 4096 = 20480
+  distance = |22000 - 20480| = 1520
+  1520 > 768 → Phase 2: Late entropy recovery
+  
+  inferredStart = (22000 / 4096) * 4096 = 5 * 4096 = 20480
+  fragmentLength = 28672 - 20480 = 8192
+  8192 >= 4096 → Accept: snappedStart = 20480
+
+
+Why Two Phases?
+----------------
+Phase 1 (Strict): Handles normal cases where detection is accurate
+  - Boundary is close to 4KB mark (within 768 bytes)
+  - Simple rounding to nearest boundary
+
+Phase 2 (Late Recovery): Handles cases where detection started late
+  - Detection might have skipped some valid data at fragment start
+  - Infer actual start as previous 4KB boundary
+  - Validate that enough data was decoded to justify this inference
+  - Prevents false positives while maximizing fragment recovery
+
+
+6.5 Fragment Length Validation
+-------------------------------
+After snapping both start and end, validate the fragment:
+
+fragmentLength = snappedEnd - snappedStart
+
+IF fragmentLength < 4096:  // Less than one 4KB block
+  // Fragment too short - discard
+  Print "Discarding fragment with length < 4KB: [" +
+        snappedStart + "-" + snappedEnd + "] (length: " +
+        fragmentLength + " bytes)"
+  
+  Continue to next fragment
+
+ELSE:
+  // Accept snapped fragment
+  Add {start: snappedStart, end: snappedEnd} to snappedRanges
+
+
+Why 4KB minimum?
+-----------------
+- Fragments represent 4KB file system blocks
+- Anything less than 4KB is either:
+  * A snapping error
+  * An invalid detection
+  * Not a meaningful fragment in the block structure
+
+
+6.6 Complete Snapping Example
+------------------------------
+Input (raw detected boundaries):
+  Fragment 1: [0 - 20541]
+  Fragment 2: [24533 - 33060]
+  Fragment 3: [36921 - 41015]
+
+Processing Fragment 1:
+  Snap end: 20541
+    lowerBoundary = 20480, remainder = 61
+    61 < 2048 → snappedEnd = 20480
+  
+  Snap start: 0
+    nearestBoundary = 0, distance = 0
+    0 <= 768 → snappedStart = 0
+  
+  Length: 20480 - 0 = 20480 >= 4096 ✓
+  Result: [0 - 20480]
+
+Processing Fragment 2:
+  Snap end: 33060
+    lowerBoundary = 32768, remainder = 292
+    292 < 2048 → snappedEnd = 32768
+  
+  Snap start: 24533, snappedEnd = 32768
+    nearestBoundary = 24576, distance = 43
+    43 <= 768 → snappedStart = 24576
+  
+  Length: 32768 - 24576 = 8192 >= 4096 ✓
+  Result: [24576 - 32768]
+
+Processing Fragment 3:
+  Snap end: 41015
+    lowerBoundary = 40960, remainder = 55
+    55 < 2048 → snappedEnd = 40960
+  
+  Snap start: 36921, snappedEnd = 40960
+    nearestBoundary = 36864, distance = 57
+    57 <= 768 → snappedStart = 36864
+  
+  Length: 40960 - 36864 = 4096 >= 4096 ✓
+  Result: [36864 - 40960]
+
+Output (snapped boundaries):
+  Fragment 1: [0 - 20480]
+  Fragment 2: [24576 - 32768]
+  Fragment 3: [36864 - 40960]
+
+
+================================================================================
+7. FRAGMENT MERGING ALGORITHM
+================================================================================
+
+7.1 Why Merging is Needed
+--------------------------
+After snapping, some fragments might be directly adjacent:
+  - Fragment A ends at offset X
+  - Fragment B starts at offset X
+  - These represent continuous JPEG data, not separate fragments
+
+Example scenario:
+  If detection incorrectly identified a boundary mid-block,
+  snapping would correct both fragments to same boundary.
+  Result: Two adjacent fragments that should be one.
+
+
+7.2 Adjacency Check
+--------------------
+Two fragments are adjacent if:
+  currentFragment.end == nextFragment.start
+
+Example:
+  Fragment A: [0 - 20480]
+  Fragment B: [20480 - 32768]
+  
+  20480 == 20480 → ADJACENT
+
+
+7.3 Merging Algorithm
+----------------------
+File: FragmentationController.snapDetectedBoundariesToKnownBoundaries()
+
+Input: snappedRanges (list of snapped fragments)
+Output: mergedRanges (list after merging adjacent fragments)
+
+Algorithm:
+----------
+IF snappedRanges is empty:
+  RETURN empty list
+
+// Initialize with first fragment
+currentRange = copy of snappedRanges[0]
+mergedRanges = new empty list
+
+FOR i = 1 to snappedRanges.length - 1:
+  nextRange = snappedRanges[i]
+  
+  // Check if current and next are adjacent
+  IF currentRange.end == nextRange.start:
+    // ADJACENT - Merge them
+    
+    Print "Merging adjacent fragments: [" +
+          currentRange.start + "-" + currentRange.end + "] + [" +
+          nextRange.start + "-" + nextRange.end + "] → [" +
+          currentRange.start + "-" + nextRange.end + "]"
+    
+    // Extend current range to include next range
+    currentRange.end = nextRange.end
+    currentRange.originalEnd = nextRange.originalEnd
+    
+    // Don't add to mergedRanges yet - might merge with more
+  
+  ELSE:
+    // NOT ADJACENT - Save current, start new
+    
+    Add currentRange to mergedRanges
+    currentRange = copy of nextRange
+  
+  END IF
+
+END FOR
+
+// Add final range
+Add currentRange to mergedRanges
+
+Print "\n=== AFTER MERGING ==="
+Print "Merged fragments: " + mergedRanges.size()
+FOR each range in mergedRanges:
+  Print "  Merged fragment: [" + range.start + " - " + range.end + "]"
+
+RETURN mergedRanges
+
+
+7.4 Merging Examples
+---------------------
+
+Example 1: No Merging Needed
+-----------------------------
+Input:
+  [0 - 20480], [24576 - 32768], [36864 - 40960]
+
+Check adjacency:
+  20480 ≠ 24576 → NOT adjacent
+  32768 ≠ 36864 → NOT adjacent
+
+Output:
+  [0 - 20480], [24576 - 32768], [36864 - 40960]
+  (No changes)
+
+
+Example 2: Merge Two Fragments
+-------------------------------
+Input:
+  [0 - 20480], [20480 - 32768], [36864 - 40960]
+
+Check adjacency:
+  20480 == 20480 → ADJACENT, merge to [0 - 32768]
+  32768 ≠ 36864 → NOT adjacent
+
+Output:
+  [0 - 32768], [36864 - 40960]
+
+
+Example 3: Merge All Fragments
+-------------------------------
+Input:
+  [0 - 20480], [20480 - 32768], [32768 - 40960]
+
+Check adjacency:
+  20480 == 20480 → ADJACENT, merge to [0 - 32768]
+  32768 == 32768 → ADJACENT, merge to [0 - 40960]
+
+Output:
+  [0 - 40960]
+
+
+Example 4: Multiple Merge Groups
+---------------------------------
+Input:
+  [0 - 20480], [20480 - 24576], [28672 - 32768], [32768 - 36864]
+
+Check adjacency:
+  20480 == 20480 → ADJACENT, merge to [0 - 24576]
+  24576 ≠ 28672 → NOT adjacent, save [0 - 24576]
+  32768 == 32768 → ADJACENT, merge to [28672 - 36864]
+
+Output:
+  [0 - 24576], [28672 - 36864]
+
+
+7.5 Why Merging Matters
+------------------------
+Accuracy: Correct fragment count matches ground truth
+  - Without merging: might report 4 fragments
+  - With merging: correctly report 2 fragments
+
+Reconstruction: Merged fragments = continuous data
+  - No gaps in reconstructed image
+  - Better visual quality
+
+Metrics: Detection rate calculated correctly
+  - Matched fragments = ground truth fragments
+  - Avoids over-counting due to snapping artifacts
+
+
+================================================================================
+8. COMPLETE DETECTION FLOW EXAMPLE
+================================================================================
+
+8.1 Input File Structure
+-------------------------
+Fragmented JPEG file: 41017 bytes
+
+Block structure (ground truth):
+  [0-4096]      JPEG block 0
+  [4096-8192]   JPEG block 1
+  [8192-12288]  JPEG block 2
+  [12288-16384] JPEG block 3
+  [16384-20480] JPEG block 4
+  [20480-24576] NOISE block 1  ← 4KB noise
+  [24576-28672] JPEG block 5
+  [28672-32768] JPEG block 6
+  [32768-36864] NOISE block 2  ← 4KB noise
+  [36864-40960] JPEG block 7
+  [40960-41017] JPEG block 8 (partial, 57 bytes)
+
+Expected fragments after detection & snapping:
+  Fragment 1: [0 - 20480]
+  Fragment 2: [24576 - 32768]
+  Fragment 3: [36864 - 40960]
+
+
+8.2 Detection Process
+----------------------
+
+Step 1: Find JPEG Header
+-------------------------
+Scan first 100 bytes for SOI marker (0xFF 0xD8)
+Found at offset: 0
+Parse headers to find entropy start: 651
+
+Initialize:
+  jpegHeaderStart = 0
+  entropyStart = 651
+  fragmentStartOffset = 651
+  isFirstFragment = true
+  insideValidFragment = false
+  consecutiveValidMCUs = 0
+
+
+Step 2: Decode MCUs (Fragment 1)
+---------------------------------
+MCU 0 at offset 651: Valid ✓
+  consecutiveValidMCUs = 1
+  firstConsecutiveValidMCUOffset = 651
+
+MCU 1 at offset 675: Valid ✓
+  consecutiveValidMCUs = 2
+  → FRAGMENT START at offset 0 (including header [0-651])
+  → Entropy section starts at offset 651
+  insideValidFragment = true
+  mcusInCurrentFragment = 2
+  isFirstFragment = false
+
+MCU 2 at offset 698: Valid ✓
+  mcusInCurrentFragment = 3
+
+... (continue decoding) ...
+
+MCU 496 at offset 20500: Valid ✓
+  lastValidMCUBoundary = 20525
+  mcusInCurrentFragment = 497
+
+MCU 497 at offset 20541: Valid ✓
+  lastValidMCUBoundary = 20541
+  mcusInCurrentFragment = 498
+
+MCU 498 at offset 20561: INVALID ✗
+  → FRAGMENT END at offset 20541
+  → Length: 20541 - 0 = 20541 bytes (498 MCUs)
+  → Record fragment: [0, 20541]
+  insideValidFragment = false
+  consecutiveValidMCUs = 0
+
+
+Step 3: Recovery After First Fragment
+--------------------------------------
+Scan from offset 20561 for valid JPEG data
+  20561: Try decode → FAIL
+  20562: Try decode → FAIL
+  ...
+  20630: Try decode → FAIL
+  20631: Found valid DC coefficient → SUCCESS
+  Skipped 70 bytes, resuming at offset 20631
+
+Note: Recovered into noise region - next MCUs will also fail
+
+
+Step 4: Scan Through Noise
+---------------------------
+MCU at 20630: Valid ✓ (1 MCU)
+MCU at 20650: INVALID ✗
+  consecutiveValidMCUs = 1 (< 2, not enough for fragment start)
+  → Discard short fragment
+  → Continue recovery
+
+Multiple recovery attempts through noise region [20480-24576]
+All attempts find < 2 consecutive valid MCUs
+Eventually reach offset near 24533
+
+
+Step 5: Detect Fragment 2 Start
+--------------------------------
+MCU at 24533: Valid ✓
+  consecutiveValidMCUs = 1
+  firstConsecutiveValidMCUOffset = 24533
+
+MCU at 24555: Valid ✓
+  consecutiveValidMCUs = 2
+  → FRAGMENT START at offset 24533
+  insideValidFragment = true
+  mcusInCurrentFragment = 2
+
+MCU at 24577: Valid ✓
+  mcusInCurrentFragment = 3
+
+... (continue decoding) ...
+
+MCU 855 at 33030: Valid ✓
+  lastValidMCUBoundary = 33060
+  mcusInCurrentFragment = 234
+
+MCU 856 at 33060: INVALID ✗
+  → FRAGMENT END at offset 33060
+  → Length: 33060 - 24533 = 8527 bytes (234 MCUs)
+  → Record fragment: [24533, 33060]
+  insideValidFragment = false
+
+
+Step 6: Scan Through Second Noise Block
+----------------------------------------
+Recovery scan from offset 33060
+Multiple attempts through noise region [32768-36864]
+Eventually reach offset near 36921
+
+
+Step 7: Detect Fragment 3 Start
+--------------------------------
+MCU at 36921: Valid ✓
+  consecutiveValidMCUs = 1
+  firstConsecutiveValidMCUOffset = 36921
+
+MCU at 36943: Valid ✓
+  consecutiveValidMCUs = 2
+  → FRAGMENT START at offset 36921
+  insideValidFragment = true
+  mcusInCurrentFragment = 2
+
+... (continue decoding) ...
+
+MCU 1070 at 40990: Valid ✓
+  lastValidMCUBoundary = 41015
+  mcusInCurrentFragment = 95
+
+MCU 1071 at 41015: INVALID ✗ (reached end of file)
+  → FRAGMENT END at offset 41015
+  → Length: 41015 - 36921 = 4094 bytes (95 MCUs)
+  → Record fragment: [36921, 41015]
+
+
+Step 8: Detection Complete
+---------------------------
+Raw detected fragments:
+  [0 - 20541]
+  [24533 - 33060]
+  [36921 - 41015]
+
+
+8.3 Boundary Snapping
+---------------------
+
+Fragment 1: [0 - 20541]
+-----------------------
+Snap end: 20541
+  lowerBoundary = 20480, remainder = 61
+  61 < 2048 → snappedEnd = 20480
+
+Snap start: 0
+  nearestBoundary = 0, distance = 0
+  0 <= 768 → snappedStart = 0
+
+Snapped: [0 - 20480] (length: 20480 bytes)
+
+
+Fragment 2: [24533 - 33060]
+----------------------------
+Snap end: 33060
+  lowerBoundary = 32768, remainder = 292
+  292 < 2048 → snappedEnd = 32768
+
+Snap start: 24533, snappedEnd = 32768
+  nearestBoundary = 24576, distance = 43
+  43 <= 768 → snappedStart = 24576
+
+Snapped: [24576 - 32768] (length: 8192 bytes)
+
+
+Fragment 3: [36921 - 41015]
+----------------------------
+Snap end: 41015
+  lowerBoundary = 40960, remainder = 55
+  55 < 2048 → snappedEnd = 40960
+
+Snap start: 36921, snappedEnd = 40960
+  nearestBoundary = 36864, distance = 57
+  57 <= 768 → snappedStart = 36864
+
+Snapped: [36864 - 40960] (length: 4096 bytes)
+
+
+Snapped fragments:
+  [0 - 20480]
+  [24576 - 32768]
+  [36864 - 40960]
+
+
+8.4 Fragment Merging
+--------------------
+
+Check Fragment 1 → Fragment 2:
+  20480 ≠ 24576 → NOT adjacent
+
+Check Fragment 2 → Fragment 3:
+  32768 ≠ 36864 → NOT adjacent
+
+Merged fragments (no changes):
+  [0 - 20480]
+  [24576 - 32768]
+  [36864 - 40960]
+
+
+8.5 Final Results
+-----------------
+
+Detected & Processed Fragments:
+  Fragment 1: [0 - 20480]      (20480 bytes = 5 blocks)
+  Fragment 2: [24576 - 32768]  (8192 bytes = 2 blocks)
+  Fragment 3: [36864 - 40960]  (4096 bytes = 1 block)
+
+Ground Truth Fragments:
+  Fragment 1: [0 - 20480]      (20480 bytes = 5 blocks)
+  Fragment 2: [24576 - 32768]  (8192 bytes = 2 blocks)
+  Fragment 3: [36864 - 40960]  (4096 bytes = 1 block)
+
+Accuracy:
+  Fragment 1: Start diff = 0, End diff = 0 → 100% match ✓
+  Fragment 2: Start diff = 0, End diff = 0 → 100% match ✓
+  Fragment 3: Start diff = 0, End diff = 0 → 100% match ✓
+
+Detection Rate: 3/3 = 100%
+
+
+================================================================================
+END OF DETECTION LOGIC DOCUMENTATION
+================================================================================
+
+This document details the core detection logic including:
+  ✓ Header detection and inclusion in first fragment
+  ✓ Fragment start criteria (2+ consecutive valid MCUs)
+  ✓ Fragment end detection (JPEG rule breaks)
+  ✓ Recovery algorithm for finding next valid data
+  ✓ Boundary snapping (end midpoint rule, start two-phase)
+  ✓ Fragment merging for adjacent boundaries
+  ✓ Complete example with actual byte offsets
+
+Key Takeaways:
+  - Detection = Huffman decoding validation
+  - 2 consecutive valid MCUs = fragment start
+  - 1 invalid MCU = fragment end (if inside fragment)
+  - Recovery scans up to 30KB to find next valid data
+  - Snapping aligns to 4KB boundaries (file system blocks)
+  - Merging combines adjacent snapped fragments
+  - Result: accurate fragment boundaries matching ground truth
+
+Last Updated: January 2, 2026
+Documentation: JPEG Fragmentation Detection System

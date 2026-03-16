@@ -1008,17 +1008,17 @@ public class FragmentationController {
         List<Map<String, Long>> mergedRanges = new ArrayList<>();
         if (!snappedRanges.isEmpty()) {
             Map<String, Long> currentRange = new HashMap<>(snappedRanges.get(0));
-            
+
             for (int i = 1; i < snappedRanges.size(); i++) {
                 Map<String, Long> nextRange = snappedRanges.get(i);
-                
+
                 // Check if current range's end equals next range's start
                 if (currentRange.get("end").equals(nextRange.get("start"))) {
                     // Merge: extend current range's end to next range's end
-                    System.out.println("Merging adjacent fragments: [" + currentRange.get("start") + "-" + 
-                        currentRange.get("end") + "] + [" + nextRange.get("start") + "-" + 
-                        nextRange.get("end") + "] → [" + currentRange.get("start") + "-" + 
-                        nextRange.get("end") + "]");
+                    System.out.println("Merging adjacent fragments: [" + currentRange.get("start") + "-" +
+                            currentRange.get("end") + "] + [" + nextRange.get("start") + "-" +
+                            nextRange.get("end") + "] → [" + currentRange.get("start") + "-" +
+                            nextRange.get("end") + "]");
                     currentRange.put("end", nextRange.get("end"));
                     currentRange.put("originalEnd", nextRange.get("originalEnd"));
                 } else {
