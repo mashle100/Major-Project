@@ -19,6 +19,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 @RestController
@@ -173,20 +174,28 @@ public class FragmentationController {
                                 comparison.put("startOffsetDifference", startDiff);
                                 comparison.put("endOffsetDifference", endDiff);
 
-                                double startAccuracy = actualStart > 0
-                                        ? Math.max(0, 100.0 - (startDiff / (double) actualStart * 100))
-                                        : 100.0;
-                                double endAccuracy = actualEnd > 0
-                                        ? Math.max(0, 100.0 - (endDiff / (double) actualEnd * 100))
-                                        : 100.0;
+                                double boundaryAccuracyStart = boundaryAccuracyPercent(detectedStart, actualStart);
+                                double boundaryAccuracyEnd = boundaryAccuracyPercent(detectedEnd, actualEnd);
 
-                                comparison.put("startAccuracy", String.format("%.2f%%", startAccuracy));
-                                comparison.put("endAccuracy", String.format("%.2f%%", endAccuracy));
+                                comparison.put("boundaryAccuracyStartValue", boundaryAccuracyStart);
+                                comparison.put("boundaryAccuracyEndValue", boundaryAccuracyEnd);
+                                comparison.put("boundaryAccuracyStart", formatPercent(boundaryAccuracyStart));
+                                comparison.put("boundaryAccuracyEnd", formatPercent(boundaryAccuracyEnd));
+
+                                // Backward-compat for UI and existing clients.
+                                comparison.put("startAccuracy", formatPercent(boundaryAccuracyStart));
+                                comparison.put("endAccuracy", formatPercent(boundaryAccuracyEnd));
                             } else {
                                 comparison.put("detectedStartOffset", null);
                                 comparison.put("detectedEndOffset", null);
                                 comparison.put("startOffsetDifference", null);
                                 comparison.put("endOffsetDifference", null);
+                                comparison.put("boundaryAccuracyStartValue", null);
+                                comparison.put("boundaryAccuracyEndValue", null);
+                                comparison.put("boundaryAccuracyStart", "Not Detected");
+                                comparison.put("boundaryAccuracyEnd", "Not Detected");
+
+                                // Backward-compat for UI and existing clients.
                                 comparison.put("startAccuracy", "Not Detected");
                                 comparison.put("endAccuracy", "Not Detected");
                             }
@@ -236,6 +245,12 @@ public class FragmentationController {
 
                         result.put("fragmentComparisons", fragmentComparisons);
 
+                        BoundaryAverages boundaryAverages = computeBoundaryAverages(fragmentComparisons);
+                        result.put("boundaryAccuracyStartAvgValue", boundaryAverages.avgStart);
+                        result.put("boundaryAccuracyEndAvgValue", boundaryAverages.avgEnd);
+                        result.put("boundaryAccuracyStartAvg", formatPercent(boundaryAverages.avgStart));
+                        result.put("boundaryAccuracyEndAvg", formatPercent(boundaryAverages.avgEnd));
+
                         int matchedFragments = 0;
                         for (Map<String, Object> comp : fragmentComparisons) {
                             if (comp.get("detectedStartOffset") != null) {
@@ -252,6 +267,27 @@ public class FragmentationController {
                                 : 0.0;
                         result.put("detectionRate", String.format("%.2f%%", detectionRate));
                         result.put("matchedFragments", matchedFragments);
+
+                        BlockClassificationMetrics metrics = computeBlockClassificationMetrics(fragmentInfo,
+                                validationResult.detectedFragmentRanges, 4096);
+                        result.put("tpBlocks", metrics.tp);
+                        result.put("fpBlocks", metrics.fp);
+                        result.put("fnBlocks", metrics.fn);
+                        result.put("tnBlocks", metrics.tn);
+                        result.put("classificationAccuracy", metrics.accuracy);
+                        result.put("classificationPrecision", metrics.precision);
+                        result.put("classificationRecall", metrics.recall);
+                        result.put("classificationAccuracyPct", formatPercent(metrics.accuracy * 100.0));
+                        result.put("classificationPrecisionPct", formatPercent(metrics.precision * 100.0));
+                        result.put("classificationRecallPct", formatPercent(metrics.recall * 100.0));
+
+                        System.out.println("Block classification metrics: TP=" + metrics.tp + " FP=" + metrics.fp
+                                + " FN=" + metrics.fn + " TN=" + metrics.tn);
+                        System.out.println("Classification: accuracy=" + formatPercent(metrics.accuracy * 100.0)
+                                + " precision=" + formatPercent(metrics.precision * 100.0)
+                                + " recall=" + formatPercent(metrics.recall * 100.0));
+                        System.out.println("Boundary avg: start=" + formatPercent(boundaryAverages.avgStart)
+                                + " end=" + formatPercent(boundaryAverages.avgEnd));
 
                         LastFragmentationInfo lastInfo = new LastFragmentationInfo();
                         lastInfo.fragmentedPath = fragmentedPath;
@@ -525,20 +561,28 @@ public class FragmentationController {
                             comparison.put("startOffsetDifference", startDiff);
                             comparison.put("endOffsetDifference", endDiff);
 
-                            double startAccuracy = actualStart > 0
-                                    ? Math.max(0, 100.0 - (startDiff / (double) actualStart * 100))
-                                    : 100.0;
-                            double endAccuracy = actualEnd > 0
-                                    ? Math.max(0, 100.0 - (endDiff / (double) actualEnd * 100))
-                                    : 100.0;
+                            double boundaryAccuracyStart = boundaryAccuracyPercent(detectedStart, actualStart);
+                            double boundaryAccuracyEnd = boundaryAccuracyPercent(detectedEnd, actualEnd);
 
-                            comparison.put("startAccuracy", String.format("%.2f%%", startAccuracy));
-                            comparison.put("endAccuracy", String.format("%.2f%%", endAccuracy));
+                            comparison.put("boundaryAccuracyStartValue", boundaryAccuracyStart);
+                            comparison.put("boundaryAccuracyEndValue", boundaryAccuracyEnd);
+                            comparison.put("boundaryAccuracyStart", formatPercent(boundaryAccuracyStart));
+                            comparison.put("boundaryAccuracyEnd", formatPercent(boundaryAccuracyEnd));
+
+                            // Backward-compat for UI and existing clients.
+                            comparison.put("startAccuracy", formatPercent(boundaryAccuracyStart));
+                            comparison.put("endAccuracy", formatPercent(boundaryAccuracyEnd));
                         } else {
                             comparison.put("detectedStartOffset", null);
                             comparison.put("detectedEndOffset", null);
                             comparison.put("startOffsetDifference", null);
                             comparison.put("endOffsetDifference", null);
+                            comparison.put("boundaryAccuracyStartValue", null);
+                            comparison.put("boundaryAccuracyEndValue", null);
+                            comparison.put("boundaryAccuracyStart", "Not Detected");
+                            comparison.put("boundaryAccuracyEnd", "Not Detected");
+
+                            // Backward-compat for UI and existing clients.
                             comparison.put("startAccuracy", "Not Detected");
                             comparison.put("endAccuracy", "Not Detected");
                         }
@@ -547,6 +591,12 @@ public class FragmentationController {
                     }
 
                     result.put("fragmentComparisons", fragmentComparisons);
+
+                    BoundaryAverages boundaryAverages = computeBoundaryAverages(fragmentComparisons);
+                    result.put("boundaryAccuracyStartAvgValue", boundaryAverages.avgStart);
+                    result.put("boundaryAccuracyEndAvgValue", boundaryAverages.avgEnd);
+                    result.put("boundaryAccuracyStartAvg", formatPercent(boundaryAverages.avgStart));
+                    result.put("boundaryAccuracyEndAvg", formatPercent(boundaryAverages.avgEnd));
 
                     int matchedFragments = 0;
                     for (Map<String, Object> comp : fragmentComparisons) {
@@ -564,6 +614,28 @@ public class FragmentationController {
                             : 0.0;
                     result.put("detectionRate", String.format("%.2f%%", detectionRate));
                     result.put("matchedFragments", matchedFragments);
+
+                    BlockClassificationMetrics metrics = computeBlockClassificationMetrics(fragmentInfo,
+                            validationResult.detectedFragmentRanges, 4096);
+                    result.put("tpBlocks", metrics.tp);
+                    result.put("fpBlocks", metrics.fp);
+                    result.put("fnBlocks", metrics.fn);
+                    result.put("tnBlocks", metrics.tn);
+                    result.put("classificationAccuracy", metrics.accuracy);
+                    result.put("classificationPrecision", metrics.precision);
+                    result.put("classificationRecall", metrics.recall);
+                    result.put("classificationAccuracyPct", formatPercent(metrics.accuracy * 100.0));
+                    result.put("classificationPrecisionPct", formatPercent(metrics.precision * 100.0));
+                    result.put("classificationRecallPct", formatPercent(metrics.recall * 100.0));
+
+                    System.out.println("Block classification metrics (reanalyze): TP=" + metrics.tp + " FP="
+                            + metrics.fp + " FN=" + metrics.fn + " TN=" + metrics.tn);
+                    System.out.println("Classification (reanalyze): accuracy="
+                            + formatPercent(metrics.accuracy * 100.0)
+                            + " precision=" + formatPercent(metrics.precision * 100.0)
+                            + " recall=" + formatPercent(metrics.recall * 100.0));
+                    System.out.println("Boundary avg (reanalyze): start=" + formatPercent(boundaryAverages.avgStart)
+                            + " end=" + formatPercent(boundaryAverages.avgEnd));
 
                 } catch (Exception e) {
                     System.err.println("Error during re-analysis: " + e.getMessage());
@@ -618,6 +690,184 @@ public class FragmentationController {
         }
 
         return result;
+    }
+
+    private static String formatPercent(double percent0to100) {
+        return String.format(Locale.ROOT, "%.2f%%", clamp(percent0to100, 0.0, 100.0));
+    }
+
+    private static double boundaryAccuracyPercent(long predictedOffset, long actualOffset) {
+        long diff = Math.abs(predictedOffset - actualOffset);
+        long denom = Math.max(1L, Math.abs(actualOffset));
+        double percent = 100.0 - (diff / (double) denom) * 100.0;
+        return clamp(percent, 0.0, 100.0);
+    }
+
+    private static double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private static double safeDivide(long numerator, long denominator) {
+        if (denominator == 0L) {
+            return 0.0;
+        }
+        return numerator / (double) denominator;
+    }
+
+    private static boolean intersects(long startInclusive, long endExclusive, long rangeStartInclusive,
+            long rangeEndExclusive) {
+        return startInclusive < rangeEndExclusive && endExclusive > rangeStartInclusive;
+    }
+
+    private static boolean intersectsAny(long startInclusive, long endExclusive, List<long[]> ranges) {
+        for (long[] r : ranges) {
+            if (intersects(startInclusive, endExclusive, r[0], r[1])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static List<long[]> getActualJpegRanges(ImageFragmenter.FragmentationInfo fragmentInfo) {
+        List<long[]> ranges = new ArrayList<>();
+        for (ImageFragmenter.FragmentDetail d : fragmentInfo.fragments) {
+            ranges.add(new long[] { d.outputStartOffset, d.outputEndOffset });
+        }
+        return ranges;
+    }
+
+    private static List<long[]> getActualNoiseRanges(ImageFragmenter.FragmentationInfo fragmentInfo) {
+        List<long[]> ranges = new ArrayList<>();
+        for (ImageFragmenter.FragmentDetail d : fragmentInfo.fragments) {
+            if (d.insertionLength > 0) {
+                long start = d.insertionOffset;
+                long end = d.insertionOffset + d.insertionLength;
+                ranges.add(new long[] { start, end });
+            }
+        }
+        return ranges;
+    }
+
+    private static List<long[]> getDetectedRanges(List<Map<String, Long>> detectedFragmentRanges) {
+        List<long[]> ranges = new ArrayList<>();
+        if (detectedFragmentRanges == null) {
+            return ranges;
+        }
+        for (Map<String, Long> r : detectedFragmentRanges) {
+            if (r == null) {
+                continue;
+            }
+            Long start = r.get("start");
+            Long end = r.get("end");
+            if (start == null || end == null) {
+                continue;
+            }
+            ranges.add(new long[] { start, end });
+        }
+        return ranges;
+    }
+
+    private static BlockClassificationMetrics computeBlockClassificationMetrics(
+            ImageFragmenter.FragmentationInfo fragmentInfo,
+            List<Map<String, Long>> detectedFragmentRanges,
+            int blockSizeBytes) {
+        long outputSize = fragmentInfo.outputSize;
+        long totalBlocks = (outputSize + blockSizeBytes - 1L) / blockSizeBytes;
+
+        List<long[]> actualJpegRanges = getActualJpegRanges(fragmentInfo);
+        List<long[]> actualNoiseRanges = getActualNoiseRanges(fragmentInfo);
+        List<long[]> detectedRanges = getDetectedRanges(detectedFragmentRanges);
+
+        long tp = 0;
+        long fp = 0;
+        long fn = 0;
+        long tn = 0;
+
+        for (long blockIndex = 0; blockIndex < totalBlocks; blockIndex++) {
+            long start = blockIndex * blockSizeBytes;
+            long end = Math.min(start + blockSizeBytes, outputSize);
+
+            boolean actualIsJpeg = intersectsAny(start, end, actualJpegRanges);
+            boolean actualIsNoise = intersectsAny(start, end, actualNoiseRanges);
+            if (actualIsJpeg && actualIsNoise) {
+                // Should not happen for aligned block fragmentation; prefer to count as
+                // positive.
+                actualIsNoise = false;
+            }
+
+            boolean predictedIsJpeg = intersectsAny(start, end, detectedRanges);
+
+            if (actualIsJpeg && predictedIsJpeg) {
+                tp++;
+            } else if (!actualIsJpeg && predictedIsJpeg) {
+                fp++;
+            } else if (actualIsJpeg) {
+                fn++;
+            } else {
+                tn++;
+            }
+        }
+
+        long total = tp + fp + fn + tn;
+        double accuracy = safeDivide(tp + tn, total);
+        double precision = safeDivide(tp, tp + fp);
+        double recall = safeDivide(tp, tp + fn);
+        return new BlockClassificationMetrics(tp, fp, fn, tn, accuracy, precision, recall);
+    }
+
+    private static BoundaryAverages computeBoundaryAverages(List<Map<String, Object>> fragmentComparisons) {
+        double sumStart = 0.0;
+        double sumEnd = 0.0;
+        int countStart = 0;
+        int countEnd = 0;
+
+        for (Map<String, Object> comp : fragmentComparisons) {
+            Object s = comp.get("boundaryAccuracyStartValue");
+            if (s instanceof Number) {
+                sumStart += ((Number) s).doubleValue();
+                countStart++;
+            }
+            Object e = comp.get("boundaryAccuracyEndValue");
+            if (e instanceof Number) {
+                sumEnd += ((Number) e).doubleValue();
+                countEnd++;
+            }
+        }
+
+        double avgStart = countStart == 0 ? 0.0 : (sumStart / (double) countStart);
+        double avgEnd = countEnd == 0 ? 0.0 : (sumEnd / (double) countEnd);
+        return new BoundaryAverages(avgStart, avgEnd);
+    }
+
+    private static final class BoundaryAverages {
+        final double avgStart;
+        final double avgEnd;
+
+        private BoundaryAverages(double avgStart, double avgEnd) {
+            this.avgStart = avgStart;
+            this.avgEnd = avgEnd;
+        }
+    }
+
+    private static final class BlockClassificationMetrics {
+        final long tp;
+        final long fp;
+        final long fn;
+        final long tn;
+        final double accuracy;
+        final double precision;
+        final double recall;
+
+        private BlockClassificationMetrics(long tp, long fp, long fn, long tn, double accuracy, double precision,
+                double recall) {
+            this.tp = tp;
+            this.fp = fp;
+            this.fn = fn;
+            this.tn = tn;
+            this.accuracy = accuracy;
+            this.precision = precision;
+            this.recall = recall;
+        }
     }
 
     @PostMapping(value = "/jpeg-info", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -715,7 +965,7 @@ public class FragmentationController {
                     ImageFragmenter.FragmentationInfo fragmentInfo = ImageFragmenter
                             .fragmentImageWithCustomStructure(originalPath, fragmentedPath, blockStructure);
 
-                    ValidationAnalysisResult validationResult = processValidation(fragmentedPath, 3);
+                    ValidationAnalysisResult validationResult = processValidation(fragmentedPath, 1);
 
                     // Log detection results BEFORE snapping
                     System.out.println("\n=== BEFORE SNAPPING ===");
@@ -814,18 +1064,28 @@ public class FragmentationController {
                             comparison.put("startOffsetDifference", startDiff);
                             comparison.put("endOffsetDifference", endDiff);
 
-                            double startAccuracy = actualFrag.outputStartOffset > 0
-                                    ? Math.max(0, 100.0 - (startDiff / (double) actualFrag.outputStartOffset * 100))
-                                    : 100.0;
-                            double endAccuracy = actualFrag.outputEndOffset > 0
-                                    ? Math.max(0, 100.0 - (endDiff / (double) actualFrag.outputEndOffset * 100))
-                                    : 100.0;
+                            double boundaryAccuracyStart = boundaryAccuracyPercent(detectedStart,
+                                    actualFrag.outputStartOffset);
+                            double boundaryAccuracyEnd = boundaryAccuracyPercent(detectedEnd,
+                                    actualFrag.outputEndOffset);
 
-                            comparison.put("startAccuracy", String.format("%.2f%%", startAccuracy));
-                            comparison.put("endAccuracy", String.format("%.2f%%", endAccuracy));
+                            comparison.put("boundaryAccuracyStartValue", boundaryAccuracyStart);
+                            comparison.put("boundaryAccuracyEndValue", boundaryAccuracyEnd);
+                            comparison.put("boundaryAccuracyStart", formatPercent(boundaryAccuracyStart));
+                            comparison.put("boundaryAccuracyEnd", formatPercent(boundaryAccuracyEnd));
+
+                            // Backward-compat for UI and existing clients.
+                            comparison.put("startAccuracy", formatPercent(boundaryAccuracyStart));
+                            comparison.put("endAccuracy", formatPercent(boundaryAccuracyEnd));
                         } else {
                             comparison.put("detectedStartOffset", null);
                             comparison.put("detectedEndOffset", null);
+                            comparison.put("boundaryAccuracyStartValue", null);
+                            comparison.put("boundaryAccuracyEndValue", null);
+                            comparison.put("boundaryAccuracyStart", "Not Detected");
+                            comparison.put("boundaryAccuracyEnd", "Not Detected");
+
+                            // Backward-compat for UI and existing clients.
                             comparison.put("startAccuracy", "Not Detected");
                             comparison.put("endAccuracy", "Not Detected");
                         }
@@ -834,6 +1094,25 @@ public class FragmentationController {
                     }
 
                     result.put("fragmentComparisons", fragmentComparisons);
+
+                    BoundaryAverages boundaryAverages = computeBoundaryAverages(fragmentComparisons);
+                    result.put("boundaryAccuracyStartAvgValue", boundaryAverages.avgStart);
+                    result.put("boundaryAccuracyEndAvgValue", boundaryAverages.avgEnd);
+                    result.put("boundaryAccuracyStartAvg", formatPercent(boundaryAverages.avgStart));
+                    result.put("boundaryAccuracyEndAvg", formatPercent(boundaryAverages.avgEnd));
+
+                    BlockClassificationMetrics metrics = computeBlockClassificationMetrics(fragmentInfo,
+                            validationResult.detectedFragmentRanges, 4096);
+                    result.put("tpBlocks", metrics.tp);
+                    result.put("fpBlocks", metrics.fp);
+                    result.put("fnBlocks", metrics.fn);
+                    result.put("tnBlocks", metrics.tn);
+                    result.put("classificationAccuracy", metrics.accuracy);
+                    result.put("classificationPrecision", metrics.precision);
+                    result.put("classificationRecall", metrics.recall);
+                    result.put("classificationAccuracyPct", formatPercent(metrics.accuracy * 100.0));
+                    result.put("classificationPrecisionPct", formatPercent(metrics.precision * 100.0));
+                    result.put("classificationRecallPct", formatPercent(metrics.recall * 100.0));
 
                     // Store fragmentation info for re-analysis
                     LastFragmentationInfo lastInfo = new LastFragmentationInfo();
